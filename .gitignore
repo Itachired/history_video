@@ -1,0 +1,38 @@
+.DS_Store
+
+# Local secrets and environment overrides
+.env
+.env.*
+!.env.example
+
+# Logs, traces, and runtime artifacts
+*.log
+logs/
+backend/logs/
+backend/trace_*.log
+
+# Python caches and virtual environments
+__pycache__/
+**/__pycache__/
+.pytest_cache/
+.mypy_cache/
+.venv/
+venv/
+
+# Frontend dependencies and build output
+node_modules/
+frontend/node_modules/
+frontend/dist/
+dist/
+coverage/
+
+# Package manager caches
+.pnp
+.pnp.js
+.pnpm-store/
+
+# IDE and local tool state
+.idea/
+.vscode/
+.history/
+*.tsbuildinfo
