@@ -22,6 +22,7 @@ from app.constants import LLM_ENDPOINT_ID
 from app.generators.base import Generator
 from app.generators.phase import Phase, PhaseFinder
 from app.generators.phases.common import get_correction_completion_chunk
+from app.generators.phases.knowledge_style import build_knowledge_style_prompt
 from app.logger import ERROR
 from app.mode import Mode
 from app.output_parsers import parse_video_description
@@ -59,6 +60,48 @@ phase=VideoDescription
 描述：中景，水牛，用小手擦了擦眼睛，委屈地“呜呜”哭泣，接着，水牛在床上，抱着被子不断变换姿势，翻来覆去，显得十分痛苦和无助。
 """
 )
+
+HISTORY_KNOWLEDGE_VIDEO_DESCRIPTION_SYSTEM_PROMPT = ArkMessage(
+    role="system",
+    content="""# 角色
+你是历史/知识类短视频动态描述词生成器。你将根据 StoryBoard、角色描述和首帧描述，生成对应的视频动态描述词，用于下一步生成视频。
+
+# 相关限制
+- 不要回复台词。
+- 对战争、暴力、处决、死亡等内容只做概括或象征性动态表达，不渲染血腥、恐怖和细节化伤害画面。
+- 避免煽动性、极端化表达，保持客观、中立。
+- 遇到起义、镇压、武器、冲突、伤亡等历史事件，不直接生成攻击、挥舞武器、受伤、尸体、恐怖表情等动态；改写为地图标记移动、文献翻页、远景人群剪影聚集、会议讨论、时间线推进、城市远景变化等安全画面。
+
+# 任务描述与要求
+- 认真分析分镜信息及角色的描述和动作，以场景、主体、镜头运动、画面变化来组织语言。
+- 适合历史知识类动画解说短视频，可使用地图推进、文献展开、建筑远景、人群剪影、会议场景、时间线移动等动态。
+- 动作应平稳、克制，优先使用推拉、横移、轻微视差、图解元素展开，不使用激烈追逐、冲撞、砍杀、爆炸等运动。
+- 视频序号和分镜序号必须一一对应且总数保持一致。
+- [重要] 如果用户提示词内容没问题，在正常返回结果前加上"phase=VideoDescription"的前缀。
+
+# 输出按照以下格式回答：
+phase=VideoDescription
+视频1：
+角色：旁白
+描述：中景，历史地图缓慢展开，关键地点被标记，镜头轻微推进。
+视频2：
+角色：历史人物，旁白
+描述：远景，会议厅中人物剪影聚集，文献标题浮现，镜头平稳横移。
+"""
+)
+
+
+def _select_video_description_prompt(phase_finder: PhaseFinder) -> ArkMessage:
+    content_mode = phase_finder.get_content_mode()
+    if content_mode == "history_knowledge":
+        return ArkMessage(
+            role="system",
+            content=f"{HISTORY_KNOWLEDGE_VIDEO_DESCRIPTION_SYSTEM_PROMPT.content}\n\n"
+                    f"{build_knowledge_style_prompt(phase_finder.get_content_options())}\n\n"
+                    "# 动态风格要求\n"
+                    "- 镜头运动应延续视觉风格和背景参考图的空间感，采用平稳推进、横移、轻微视差、图解元素展开等方式。"
+        )
+    return VIDEO_DESCRIPTION_SYSTEM_PROMPT
 
 
 class VideoDescriptionGenerator(Generator):
@@ -105,7 +148,7 @@ class VideoDescriptionGenerator(Generator):
                 raise InvalidParameter("messages", "first frame description not found")
 
             messages = [
-                VIDEO_DESCRIPTION_SYSTEM_PROMPT,
+                _select_video_description_prompt(self.phase_finder),
                 ArkMessage(role="assistant", content=f"phase={Phase.SCRIPT.value}\n{script}"),
                 ArkMessage(role="user", content="下一步"),
                 ArkMessage(role="assistant", content=f"phase={Phase.STORY_BOARD.value}\n{storyboards}"),

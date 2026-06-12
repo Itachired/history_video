@@ -9,8 +9,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from typing import Any, Dict, List, Optional
+
 from pydantic import BaseModel
 
 
 class Film(BaseModel):
     url: str
+    local_assets: Optional[List[Dict[str, Any]]] = None
+    download_url: Optional[str] = None
+    archive_url: Optional[str] = None
+    all_assets_archive_url: Optional[str] = None

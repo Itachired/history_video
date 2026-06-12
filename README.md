@@ -1,274 +1,245 @@
-# 互动双语视频生成器 Chat2Cartoon
+# 历史/知识类视频生成工作台
 
-## 应用介绍
+本项目基于原 `Chat2Cartoon` 示例扩展为一个面向历史、科普和知识讲解内容的本地视频生成工作台。当前默认工作流是“历史/知识类视频”，同时保留“儿童睡前故事”模式，支持从主题生成文案或上传现成文案，再逐步生成分镜脚本、角色图、分镜画面、分镜视频、配音和最终成片。
 
-这是一款专门为内容素材创作打造的创新工具。它能够根据用户输入的主题，快速生成富有寓意的双语视频。体验者也可以进行例如修改 prompt、挑选图片/视频来干预最终视频效果。为体验者提供丰富多彩、富有教育意义的视听体验，在快乐中学习和成长。
+前端运行在 `http://localhost:8080`，后端默认运行在 `http://127.0.0.1:8889`。
 
+## 主要功能
 
-### 效果预览
-[视频地址](https://portal.volccdn.com/obj/volcfe/cloud-universal-doc/upload_252b008a6db53cc49c9d6cd8c1b74a2a.mp4)
+- 内容来源：支持直接输入主题生成文案，也支持上传现成 `.txt`、`.md`、`.text` 文案。
+- 视频类型：支持“历史/知识类视频”和“儿童睡前故事”，默认选择历史/知识类视频。
+- 科普视觉风格：内置 `纪录片半写实`、`课堂图解`、`博物馆展陈`、`信息图短视频` 四种风格，并在左侧栏提供预览图。
+- 自定义风格提示词：可补充画面风格要求，例如“低饱和、纪录片感、使用地图和文献，不要 Q 版人物”。
+- 背景参考图：用户上传参考图后，角色图和分镜图都会参考其画风、色彩、光照、时代氛围和镜头质感。
+- 角色参考图：用户可额外上传角色参考图，用于约束人物外观、服饰和材质。
+- 参考强度：支持普通、强、严格三档参考图约束，默认使用严格参考。
+- 画面比例：支持 `16:9` 横屏和 `9:16` 竖屏，图片与分镜视频会沿用同一比例。
+- 配音模式：可选择模型生成分镜配音，也可使用原音频并跳过 TTS 生成。
+- 本地素材保存：角色图、分镜图、分镜视频和成片会保存到项目素材目录，并写入 manifest。
+- 下载入口：故事角色、分镜画面、分镜视频和成片阶段均支持单个素材下载、阶段打包下载；成片阶段支持全部素材打包下载。
+- 分镜视频同步：轮询方舟视频生成任务时会把成功产物同步保存到本地，避免前端进度和本地文件脱节。
 
-### 直接体验
-[控制台体验](https://console.volcengine.com/ark/region:ark+cn-beijing/application/detail?id=bot-20241211162948-5l2kk-procode-preset)
+## 工作流
 
-### 优势
-- 便捷高效的长视频生成：具备一键生成分钟级视频的强大功能，操作流程极简，用户无需复杂设置，仅需输入需求轻松一点，即可快速获得满足需求的长视频作品，极大提升创作效率。
-- 高质量的视频产出：运用最新豆包大模型确保生成视频的高质量，画面清晰流畅、故事引人入胜，寓意深刻的内容搭配精良制作，无论是视觉享受还是内涵深度都全方位满足用户的要求。
-- 教育领域的创新赋能：依托先进大模型实现教育领域的深度落地，将双语教育与动画完美融合。
+```text
+准备阶段
+  ├─ 选择内容来源：输入主题 / 上传文案
+  ├─ 选择视频类型：历史/知识类视频 / 儿童睡前故事
+  ├─ 选择科普风格和画面比例
+  ├─ 可选：上传背景参考图、角色参考图
+  └─ 可选：输入自定义风格提示词
 
-### 相关模型
+生成阶段
+  ├─ 文案
+  ├─ 分镜脚本
+  ├─ 故事角色
+  ├─ 分镜画面
+  ├─ 分镜视频
+  ├─ 配音 / 原音频
+  └─ 成片
+```
 
-- Doubao-Seed-1.6：根据用户的主题需求，生成故事大纲与分镜脚本，并提供角色设定、首帧图、视频、音频等素材的创作提示词。
-- Doubao-Seedream-3.0-t2i：根据提示词描述创作具体的故事角色和分镜画面。
-- Doubao-语音合成：根据分镜台词及角色特点所匹配音色等创作提示词，生成配音文件。
-- Doubao-Seedance-1.0-lite：根据分镜首帧图及创作提示词，生成分镜动画视频。
-- Doubao-1.5-thinking-vision-pro/250428：在充分理解当前视频动画画面和故事情节的基础上，针对用户提问提供精准回答。
-- Doubao-流式语音识别：将用户的语音提问转写为文本，以便于视觉大模型对用户问题的理解与回复。
+## 使用示例
 
-## 环境准备
+### 示例一：上传法国大革命文案并生成横屏科普视频
 
-- Python 版本要求大于等于 3.8，小于 3.10(视频剪辑依赖MoviePy，其他版本的Python可能有不兼容问题)
-- Poetry 1.6.1 版本 [参考文档](https://python-poetry.org/docs/#installing-with-the-official-installer)
-- Node 版本要求大于等于 16.2.0
-- 获取语音技术产品的 APP ID 和 Access Token，获取方式参见【附录】
-- 火山方舟 API KEY [参考文档](https://www.volcengine.com/docs/82379/1298459#api-key-%E7%AD%BE%E5%90%8D%E9%89%B4%E6%9D%83)
-- 火山引擎 AK SK [参考文档](https://www.volcengine.com/docs/6291/65568)
-- 火山 TOS 桶 [参考文档](https://www.volcengine.com/docs/6349/74830)
-- 火山 TOS 桶配置跨域 [参考文档](https://www.volcengine.com/docs/6349/75033)
-- 火山方舟文本生成模型，视觉理解模型和视频生成模型接入点 [参考文档](https://www.volcengine.com/docs/82379/1099522)
+1. 在左侧栏“内容来源”选择“上传文案”。
+2. 上传 `.md` 或 `.txt` 文案。
+3. 视频类型保持默认“历史/知识类视频”。
+4. 科普视频风格选择“纪录片半写实”。
+5. 画面比例选择 `16:9`。
+6. 上传一张时代氛围接近的背景参考图。
+7. 在风格提示词中输入：
 
-## 快速开始
-
-本文为您介绍如何在本地快速部署 Chat2Cartoon 项目。
-
-1. 下载代码库
-
-   ```bash
-   git clone https://github.com/volcengine/ai-app-lab.git
-   cd demohouse/chat2cartoon
-   ```
-   
-2. 修改 `backend/.env` 中配置，填入各配置变量的值
-
-3. 安装项目的 python 依赖
-
-   ```bash
-   cd demohouse/chat2cartoon/backend
-
-   python -m venv .venv
-   source .venv/bin/activate
-   pip install poetry==1.6.1
-
-   poetry install
+   ```text
+   低饱和、纪录片感、参考历史地图、文献、街景和展陈材料，不要 Q 版人物，不要儿童绘本风。
    ```
 
-4. 启动后端服务
+8. 按工作流依次生成分镜脚本、角色、分镜画面、分镜视频、配音和成片。
+9. 在对应阶段下载单个素材或阶段压缩包，成片阶段可下载全部素材包。
 
-   ```bash
-   poetry run python index.py
+### 示例二：使用原音频，跳过模型配音
+
+1. 正常完成文案、分镜、角色、分镜画面和分镜视频生成。
+2. 在配音阶段选择“使用原音频”。
+3. 工作流会跳过模型 TTS 配音生成，后续成片使用已有音频路径或已有音频数据。
+4. 生成成片后下载最终视频和全部素材。
+
+### 示例三：生成竖屏信息图短视频
+
+1. 视频类型选择“历史/知识类视频”。
+2. 科普视频风格选择“信息图短视频”。
+3. 画面比例选择 `9:16`。
+4. 风格提示词可输入：
+
+   ```text
+   适合竖屏短视频，标题区清晰，使用时间线、图标和地图元素，信息层级明确。
    ```
 
-5. 启动前端服务
-   ```bash
-   cd demohouse/chat2cartoon/frontend
-   npm install -g pnpm@8
-   pnpm install
-   cp ../.env ./
-   pnpm dev
-   ```
+5. 继续生成后，角色图、分镜图和分镜视频都会使用竖屏比例。
 
-6. 给设置的 TOS 桶配置跨域，允许本地浏览器访问 TOS 桶上媒体资源
+## 素材存储
 
-7. 访问 `http://localhost:8080` 即可体验。
+生成素材保存在仓库根目录下的 `assets/generated/{project_id}`。`project_id` 由前端在新项目开始时生成，并随工作流传给后端。
+
+典型目录结构如下：
+
+```text
+assets/generated/{project_id}/
+├── manifest.json
+├── source/
+├── role_images/
+├── storyboard_images/
+├── storyboard_videos/
+├── film/
+└── archives/
+```
+
+`manifest.json` 会记录每个素材的阶段、索引、文件名、本地相对路径、下载地址、状态和来源任务信息。分镜视频任务在方舟后台成功后，会通过同步逻辑下载到 `storyboard_videos/`，并更新 manifest。
+
+> 注意：`assets/generated/*` 已被 `.gitignore` 忽略，避免把本地生成素材提交到 Git。需要保留素材时，请直接保留该目录或导出压缩包。
+
+## 下载与素材接口
+
+后端提供以下本地素材接口：
+
+| 接口 | 说明 |
+| --- | --- |
+| `POST /v1/assets/upload-reference-image` | 上传背景参考图或角色参考图到 TOS，并返回可用于模型参考的 URL |
+| `GET /v1/assets/projects/{project_id}/manifest` | 获取项目素材清单 |
+| `GET /v1/assets/projects/{project_id}/files/{asset_id}` | 下载或预览单个本地素材 |
+| `GET /v1/assets/projects/{project_id}/archive/{phase}` | 下载某个阶段的素材压缩包，支持 `role_images`、`storyboard_images`、`storyboard_videos`、`film` |
+| `GET /v1/assets/projects/{project_id}/archive-all` | 下载全部可用素材压缩包 |
+| `GET /v1/assets/projects/{project_id}/storyboard-videos/{index}/{task_id}` | 按任务 ID 取回并保存单个分镜视频 |
+| `GET/POST /v1/assets/projects/{project_id}/storyboard-videos/sync` | 同步项目内所有分镜视频任务状态和本地文件 |
+| `GET /v1/video-tasks/{task_id}?project_id={project_id}&index={index}` | 查询方舟视频任务；成功后会同步保存本地视频并返回本地播放地址 |
+
+## 模型与服务
+
+模型端点通过 `.env` 配置，不在代码中固定具体账号资源。当前工作流涉及：
+
+- 语言模型：生成文案、分镜脚本、角色描述、首帧描述、视频描述、音色建议等。
+- 图像生成模型：生成角色图和分镜首帧图，支持参考图和指定画幅。
+- 视频生成模型：根据首帧图和视频提示词生成分镜视频。
+- 语音合成服务：在“模型生成配音”模式下生成中文/英文配音片段。
+- 视觉理解和语音识别：保留原项目“边看边聊”相关能力时使用。
+- FFmpeg / MoviePy：合成最终成片。
+
+常用环境变量：
+
+```bash
+API_KEY=
+LLM_ENDPOINT_ID=
+T2V_ENDPOINT_ID=
+CGT_ENDPOINT_ID=
+VLM_ENDPOINT_ID=
+TOS_ACCESSKEY=
+TOS_SECRETKEY=
+TOS_BUCKET=
+TTS_APP_KEY=
+TTS_ACCESS_KEY=
+TTS_API_RESOURCE_ID=volc.service_type.10029
+TTS_BASE_URL=wss://openspeech.bytedance.com/api/v3/tts/bidirection
+TTS_NAMESPACE=BidirectionalTTS
+TTS_SPEAKER=zh_female_xiaohe_uranus_bigtts
+IMAGE_GENERATION_CONCURRENCY=3
+_FAAS_RUNTIME_PORT=8889
+```
+
+`IMAGE_GENERATION_CONCURRENCY` 用于限制角色图和分镜图的并发生成数量，避免一次性提交过多图片任务导致排队时间过长或前端等待异常。
+
+## 本地启动
+
+### 环境要求
+
+- Python `>=3.9,<3.12`
+- Poetry `1.6.1` 或兼容版本
+- Node.js `>=16.18.1`
+- pnpm
+- 可用的火山方舟 API Key、模型端点、TOS 桶和语音合成配置
+
+### 后端
+
+```bash
+cd backend
+poetry install
+_FAAS_RUNTIME_PORT=8889 poetry run python index.py
+```
+
+如果使用本机已有 Conda 环境，也可以用对应 Python 直接启动：
+
+```bash
+cd backend
+_FAAS_RUNTIME_PORT=8889 /opt/anaconda3/envs/video-gen1/bin/python index.py
+```
+
+健康检查：
+
+```bash
+curl http://127.0.0.1:8889/v1/ping
+```
+
+### 前端
+
+```bash
+cd frontend
+pnpm install
+pnpm dev
+```
+
+访问：
+
+```text
+http://localhost:8080
+```
 
 ## 目录结构
-```
+
+```text
+.
 ├── README.md
-├── Makefile              # 安装依赖/执行单测脚本
-├── .env                  # 环境变量（API Key, AKSK, 资源ID 等）
-├── index.py              # 入口脚本
-├── app
-│   ├── __init__.py
-│   ├── clients
-│   │   ├── __init__.py
-│   │   ├── downloader.py       # 下载生视频API返回的视频链接内容
-│   │   ├── llm.py              # 访问语言大模型
-│   │   ├── t2i.py              # 访问文生图API
-│   │   ├── tos.py              # 访问TOS，上载视频和配音文件
-│   │   └── vlm.py              # 访问视VLM大模型
-│   ├── generators
-│   │   ├── phases          # 各后端状态生成逻辑
-│   │   ├── __init__.py
-│   │   ├── phase.py        # 判断状态次序和解析各状态的请求内容
-│   │   ├── factory.py
-│   │   └── base.py
-│   ├── models                  # pydantic 数据结构
-│   ├── constants.py            # 固定值和解析 .env 文件里设置的环境变量
-│   ├── message_utils.py
-│   ├── mode.py  
-│   └── output_parsers.py
-├── media                       # 媒体文件
-│   └── DouyinSansBold.otf      # 字幕font
-├── poetry.lock
-├── pyproject.toml      # 项目依赖包管理
-
+├── .env.example
+├── assets/
+│   ├── generated/                 # 本地生成素材，默认不提交 Git
+│   └── state_diagram.jpg
+├── backend/
+│   ├── index.py                   # 后端入口、素材接口、视频任务同步接口
+│   ├── app/
+│   │   ├── clients/               # LLM、T2I、TOS、TTS、VLM 等客户端
+│   │   ├── generators/            # 工作流阶段生成逻辑
+│   │   │   └── phases/
+│   │   ├── models/                # 阶段数据模型
+│   │   └── services/
+│   │       └── asset_storage.py   # 本地素材存储、manifest、压缩包
+│   ├── pyproject.toml
+│   └── poetry.lock
+├── frontend/
+│   ├── src/module/VideoGenerator/ # 视频生成器 UI、状态和媒体卡片
+│   ├── package.json
+│   └── pnpm-lock.yaml
+└── logs/                          # 本地运行日志，默认不提交 Git
 ```
 
-## 技术实现
+## 清理中间文件
 
-### 流程状态机
-![state_diagram.jpg](./assets/state_diagram.jpg)
+以下命令只清理缓存、构建产物和运行日志，不会删除 `assets/generated` 中的项目素材：
 
-前后端的互动仍然是基于一连串的 http `/api/v3/bots/chat/completions` 请求，和 SSE 流式返回。
-为了实现整体生成视频的流程，前端会把会议记录和当前流程阶段保存在浏览器本地。
-
-#### 消息结构
-
-前端发给后端的请求就类似一个典型的 LLM chat 请求，每次对话都带上所有的历史对话， 最后一个 `message` 则是当前最新的请求内容。
-在正常无需重新生成媒体产物的场景，后端会按照历史对话解析当前的流程状态是什么，和判断下一个状态/步骤是什么，且执行下一个生成逻辑。
-前端则需要在每次新请求的 `message` 内容里携带下一个生成逻辑需要的信息。每个步骤需要的信息如下：
-
-| Phase                 | 前端步骤 | 需要的信息（message.content） | 组件依赖   |
-|:----------------------|------|:---------------|--------|
-| Script                | 脚本创建 | 故事主题           | 语言大模型  |
-| StoryBoard            | 分镜创建 | 故事脚本           | 语言大模型  |
-| RoleDescription       | 角色描述 | 故事脚本和分镜        | 语言大模型  |
-| RoleImage             | 角色画像 | 角色描述           | 文生图模型  |
-| FirstFrameDescription | 首帧描述 | 故事脚本，分镜和角色描述   | 语言大模型  |
-| FirstFrameImage       | 首帧画像 | 首帧描述           | 文生图模型  |
-| VideoDescription      | 视频描述 | 故事脚本，分镜和角色描述   | 语言大模型  |
-| Video                 | 视频   | 首帧画像和视频描述      | 生视频模型  |
-| Tone                  | 音色和对话 | 故事分镜           | 语言大模型  |
-| Audio                 | 音频   | 音色和对话          | 语音技术   |
-| Film                  | 影片   | 音频，对话和视频       | FFMPEG |
-
-##### `user` 消息
-user 请求的 `content` 格式都按照：`{模式} {内容}`
-- 前缀：模式（Mode）
-    - CONFIRMATION：确认进入到下一步
-    - REGENERATION：对当前步骤或前序步骤进行修改
-- 内容：完整状态的 JSON text 完整状态由前端维护，保存下来当前对话中的脚本信息（storyboards），视频信息（videos）， 
-       音频信息（audios）等。在下一步需要时通过 `user` 消息传入。JSON 内容的格式可以参考 [app/models](./backend/app/models) 目录里的代码。如果模式是 REGENERATION，内容需要加上 `phase={状态}` 
-       的前缀来指定要重新生成的 Phase 产物，例如：`"REGENERATION phase=RoleImage {"role_descriptions":"「N个角色，角色描述」"}"`
-
-##### `assistant` 消息
-assistant 返回的 `content` 格式都按照：`phase={状态} {内容}`
-- 前缀：`phase={状态}`，状态包括上述状态机中的 Phase 枚举值
-- 内容：内容包括文本内容，例如 Script、StoryBoard 阶段由语言大模型返回的完整文本，或者 JSON text 内容，如 Video 阶段
-       返回的数个 ContentGenerationTask 的 ID、 Audio 阶段返回的数个由语音技术模型返回的语音片段链接
-
-一个完整的请求示如下：
-```json
-{
-  "Messages": [
-    {
-      "content": "写个龟兔赛跑的故事",
-      "role": "user"
-    },
-    {
-      "content": "phase=Script\n\n「故事脚本。。。」",
-      "role": "assistant"
-    },
-    {
-      "content": "生成分镜脚本",
-      "role": "user"
-    },
-    {
-      "content": "phase=StoryBoard\n「N个分镜，角色，画面，中文台词，英文台词」",
-      "role": "assistant"
-    },
-    {
-      "content": "开始生成视频",
-      "role": "user"
-    },
-    {
-      "content": "phase=RoleDescription\n「N个角色，角色描述」",
-      "role": "assistant"
-    },
-    {
-      "content": "CONFIRMATION {\"role_descriptions\":\"「N个角色，角色描述」\"}",
-      "role": "user"
-    },
-    {
-      "content": "phase=RoleImage\n\n{\"role_images\": [{\"index\": 0, \"images\": [\"https://example-cloud-store.com/sample-image0.jpg\"]}]}\n\n",
-      "role": "assistant"
-    },
-    {
-      "content": "CONFIRMATION {\"script\":\"「故事脚本。。。」\",\"storyboards\":\"「N个分镜，角色，画面，中文台词，因为台词」\",\"role_descriptions\":\"「N个角色，角色描述」\"}",
-      "role": "user"
-    },
-    {
-      "content": "phase=FirstFrameDescription\n「N个分镜，角色，首帧描述」",
-      "role": "assistant"
-    },
-    {
-      "content": "CONFIRMATION {\"first_frame_descriptions\":\"「N个分镜，角色，首帧描述」\"}",
-      "role": "user"
-    },
-    {
-      "content": "phase=FirstFrameImage\n\n{\"first_frame_images\": [{\"index\": 0, \"images\": [\"https://example-cloud-store.com/sample-image0.jpg\"]}]}\n\n",
-      "role": "assistant"
-    },
-    {
-      "content": "CONFIRMATION {\"script\":\"「故事脚本。。。」\",\"storyboards\":\"「N个分镜，角色，画面，中文台词，英文台词」\",\"role_descriptions\":\"「N个角色，角色描述」\",\"first_frame_descriptions\":\"「N个分镜，角色，首帧描述」\"}",
-      "role": "user"
-    },
-    {
-      "content": "phase=VideoDescription\n「N个视频，角色，描述」",
-      "role": "assistant"
-    },
-    {
-      "content": "CONFIRMATION {\"video_descriptions\":\"「N个视频，角色，描述」\",\"first_frame_images\": [{\"index\": 0, \"images\": [\"https://example-cloud-store.com/sample-image0.jpg\"]}]}",
-      "role": "user"
-    },
-    {
-      "content": "phase=Video\n\n{\"videos\": [{\"index\": 0, \"video_gen_task_id\": \"cgt-xxxxxxxxxxxxxx-xxxxx\", \"video_data\": null}]}\n\n",
-      "role": "assistant"
-    },
-    {
-      "content": "CONFIRMATION {\"storyboards\":\"「N个分镜，角色，画面，中文台词，英文台词」\"}",
-      "role": "user"
-    },
-    {
-      "content": "phase=Tone\n\n{\"tones\": [{\"index\": 0, \"line\": \"「中文台词」\", \"line_en\": \"「英文台词」\", \"tone\": \"zh_female_shaoergushi_mars_bigtts\"}]}",
-      "role": "assistant"
-    },
-    {
-      "content": "CONFIRMATION {\"tones\": [{\"index\": 0, \"line\": \"「中文台词」\", \"line_en\": \"「英文台词」\", \"tone\": \"zh_female_shaoergushi_mars_bigtts\"}]}",
-      "role": "user"
-    },
-    {
-      "content": "phase=Audio\n\n{\"audios\": [{\"index\": 0, \"url\": \"https://tos-bucket.tos.cn-beijing.volces.com/request_id/sample-audio0.mp3\", \"audio_data\": null}]}\n\n",
-      "role": "assistant"
-    },
-    {
-      "content": "CONFIRMATION {\"storyboards\":\"「N个分镜，角色，画面，中文台词，英文台词」\",\"videos\":[{\"index\": 0, \"video_gen_task_id\": \"cgt-xxxxxxxxxxxxxx-xxxxx\", \"video_data\": null}],\"audios\":[{\"index\": 0, \"url\": \"https://tos-bucket.tos.cn-beijing.volces.com/request_id/sample-audio0.mp3\", \"audio_data\": null}]}",
-      "role": "user"
-    }
-  ]
-}
+```bash
+find . -name '.DS_Store' -delete
+find backend -type d -name '__pycache__' -prune -exec rm -rf {} +
+find backend -type f \( -name '*.pyc' -o -name '*.pyo' \) -delete
+find backend -maxdepth 1 -type f -name 'trace_*.log' -delete
+rm -rf frontend/dist
+: > logs/backend-8889.log
+: > logs/frontend-8080.log
 ```
 
-## 附录
+如需清空生成素材，请先确认没有需要保留的项目，再手动处理 `assets/generated`。
 
-### 获取 TTS_APP_ID、TTS_ACCESS_TOKEN、ASR_APP_ID、ASR_ACCESS_TOKEN？
+## 开发备注
 
-1. [完成企业认证](https://console.volcengine.com/user/authentication/detail/)
-
-2. [开通语音技术产品](https://console.volcengine.com/speech/app)
-
-3. [创建应用](https://console.volcengine.com/speech/app)，同时勾选大模型语音合成和流式语音识别大模型
-    ![alt text](assets/faq1.png)
-
-4. 开通语音合成大模型，确保页面具有音色。注意：语音合成大模型从开通到可以使用有大概5-10分钟延迟
-   ![alt text](assets/faq2.png)
-   ![alt text](assets/faq3.png)
-
-5. 流式语音识别大模型有试用包，可以不开通。如需提供稳定服务，建议开通正式版本。
-   ![alt text](assets/faq4.png)
-
-6. 获取TTS_APP_ID 和TTS_ACCESS_TOKEN
-   ![alt text](assets/faq5.png)
-
-7. 获取ASR_APP_ID、ASR_ACCESS_TOKEN
-   ![alt text](assets/faq6.png)
+- 左侧栏中的文案、参考图和风格选择支持任意顺序设置；当角色图、分镜图、分镜视频或成片已经生成后，视觉相关配置会锁定，避免后续素材风格不一致。
+- 上传的任意参考图都会同时影响角色图和分镜图；角色参考图会额外加强人物外观和服饰一致性。
+- 分镜视频任务是异步任务，前端查询任务状态时会携带 `project_id` 和 `index`，后端成功取回视频后返回本地播放 URL。
+- 视频文件接口对 `.mp4` 等格式使用 `inline` 响应头，支持浏览器内预览播放。
+- `.gitignore` 已忽略 `.env`、日志、trace、Python 缓存、前端构建产物和本地生成素材。

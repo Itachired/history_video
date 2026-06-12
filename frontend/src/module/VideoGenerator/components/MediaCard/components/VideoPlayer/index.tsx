@@ -46,22 +46,57 @@ const VideoPlayer = (
   const [playTime, setPlayTime] = useState({ currentTime: 0, duration: 0 });
 
   useEffect(() => {
+    const video = videoRef.current;
+    if (!video) {
+      return;
+    }
+    setIsPlaying(false);
+    setPlayTime({ currentTime: 0, duration: 0 });
+    video.load();
+  }, [videoLink, videoRef]);
+
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video) {
+      return undefined;
+    }
+
+    const updateDuration = () => {
+      setPlayTime({
+        currentTime: video.currentTime || 0,
+        duration: Number.isFinite(video.duration) ? video.duration : 0,
+      });
+    };
+
+    video.addEventListener('loadedmetadata', updateDuration);
+    video.addEventListener('durationchange', updateDuration);
+    return () => {
+      video.removeEventListener('loadedmetadata', updateDuration);
+      video.removeEventListener('durationchange', updateDuration);
+    };
+  }, [videoLink, videoRef]);
+
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video) {
+      return undefined;
+    }
     const callback = () => {
-      if (videoRef?.current?.currentTime) {
-        if (videoRef?.current?.currentTime === videoRef?.current?.duration) {
+      if (video.currentTime) {
+        if (video.currentTime === video.duration) {
           setIsPlaying(false);
         }
         setPlayTime({
-          currentTime: videoRef?.current?.currentTime,
-          duration: videoRef?.current?.duration,
+          currentTime: video.currentTime,
+          duration: Number.isFinite(video.duration) ? video.duration : 0,
         });
       }
     };
-    videoRef.current?.addEventListener('timeupdate', callback);
+    video.addEventListener('timeupdate', callback);
     return () => {
-      videoRef.current?.removeEventListener('timeupdate', callback);
+      video.removeEventListener('timeupdate', callback);
     };
-  }, [videoRef.current]);
+  }, [videoLink, videoRef]);
 
   const handleMouseEnter = () => {
     if (videoRef?.current?.duration) {
@@ -72,11 +107,35 @@ const VideoPlayer = (
     }
   };
 
+  const togglePlay = async () => {
+    const video = videoRef.current;
+    if (!video) {
+      return;
+    }
+    if (video.paused) {
+      try {
+        await video.play();
+        setIsPlaying(true);
+      } catch {
+        setIsPlaying(false);
+      }
+      return;
+    }
+    video.pause();
+    setIsPlaying(false);
+  };
+
   return (
-    <div className={cx(styles.videoPlayWrapper)} onMouseEnter={handleMouseEnter}>
-      <video key={videoLink} className={styles.video} ref={videoRef} loop={true}>
-        <source src={videoLink} type="video/mp4" />
-      </video>
+    <div className={cx(styles.videoPlayWrapper)} onMouseEnter={handleMouseEnter} onClick={togglePlay}>
+      <video
+        key={videoLink}
+        className={styles.video}
+        ref={videoRef}
+        loop={true}
+        preload="metadata"
+        playsInline
+        src={videoLink}
+      />
 
       <>
         <div className={cx(styles.mask, 'mask')}>
@@ -84,17 +143,17 @@ const VideoPlayer = (
             {isPlaying ? (
               <IconPause
                 className={styles.icon}
-                onClick={() => {
-                  setIsPlaying(false);
-                  videoRef?.current?.pause();
+                onClick={e => {
+                  e.stopPropagation();
+                  togglePlay();
                 }}
               />
             ) : (
               <IconPlay
                 className={styles.icon}
-                onClick={() => {
-                  setIsPlaying(true);
-                  videoRef?.current?.play();
+                onClick={e => {
+                  e.stopPropagation();
+                  togglePlay();
                 }}
               />
             )}
@@ -114,22 +173,24 @@ const VideoPlayer = (
             />
           </div>
         </div>
-        <Slider
-          className={styles.audioSlider}
-          step={0.001}
-          onChange={seconds => {
-            if (typeof seconds === 'number') {
-              videoRef?.current && (videoRef.current.currentTime = seconds);
-              setPlayTime({
-                ...playTime,
-                currentTime: seconds,
-              });
-            }
-          }}
-          value={playTime.currentTime}
-          max={videoRef?.current?.duration || seconds}
-          formatTooltip={ms => format(ms)}
-        />
+        <div onClick={e => e.stopPropagation()}>
+          <Slider
+            className={styles.audioSlider}
+            step={0.001}
+            onChange={seconds => {
+              if (typeof seconds === 'number') {
+                videoRef?.current && (videoRef.current.currentTime = seconds);
+                setPlayTime({
+                  ...playTime,
+                  currentTime: seconds,
+                });
+              }
+            }}
+            value={playTime.currentTime}
+            max={videoRef?.current?.duration || seconds}
+            formatTooltip={ms => format(ms)}
+          />
+        </div>
       </>
     </div>
   );

@@ -10,6 +10,8 @@
 logs/
 backend/logs/
 backend/trace_*.log
+assets/generated/*
+!assets/generated/.gitkeep
 
 # Python caches and virtual environments
 __pycache__/

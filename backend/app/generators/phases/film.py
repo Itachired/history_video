@@ -40,12 +40,15 @@ from app.models.audio import Audio
 from app.models.film import Film
 from app.models.tone import Tone
 from app.models.video import Video
+from app.services.asset_storage import AssetStorageService, get_project_id_from_content_options
 
 _current_dir = os.path.dirname(os.path.abspath(__file__))
 _font = os.path.join(_current_dir, "../../../media/DouyinSansBold.otf")
 
 _FADE_IN_DURATION_IN_SECONDS = 0.5
 _FADE_OUT_DURATION_IN_SECONDS = 0.5
+VOICE_MODE_GENERATED = "generated"
+VOICE_MODE_ORIGINAL = "original"
 
 
 def _available_ffmpeg_encoders() -> str:
@@ -147,10 +150,20 @@ def _split_subtitle(line: str, start_time: int, end_time: int, split_fn) -> List
     return subtitles
 
 
-def _generate_film(req_id: str, tones: List[Tone], videos: List[Video], audios: List[Audio]):
+def _generate_film(
+    req_id: str,
+    tones: List[Tone],
+    videos: List[Video],
+    audios: Optional[List[Audio]] = None,
+    voice_mode: str = VOICE_MODE_GENERATED,
+):
     tones.sort(key=lambda tone: tone.index)
     videos.sort(key=lambda video: video.index)
+    if audios is None:
+        audios = []
     audios.sort(key=lambda audio: audio.index)
+    tones_by_index = {tone.index: tone for tone in tones}
+    audios_by_index = {audio.index: audio for audio in audios}
 
     video_clips = []
     cn_subtitles = []
@@ -158,34 +171,36 @@ def _generate_film(req_id: str, tones: List[Tone], videos: List[Video], audios: 
 
     clip_start_time = 0.0
     start = []
-    elements = list(zip(tones, videos, audios))
-    for i, (t, v, a) in enumerate(elements):
+    for i, v in enumerate(videos):
         start.append(clip_start_time)
 
         with tempfile.NamedTemporaryFile(suffix=".mp4") as video_temp:
             video_temp.write(v.video_data)
             video_clip = VideoFileClip(video_temp.name)
 
-        with tempfile.NamedTemporaryFile(suffix=".mp3") as audio_temp:
-            audio_temp.write(a.audio_data)
-            audio_clip = AudioFileClip(audio_temp.name)
-            if audio_clip.duration > video_clip.duration:
-                audio_clip = audio_clip.subclipped(0, video_clip.duration)
+        t = tones_by_index.get(v.index)
+        if voice_mode == VOICE_MODE_GENERATED:
+            a = audios_by_index[v.index]
+            with tempfile.NamedTemporaryFile(suffix=".mp3") as audio_temp:
+                audio_temp.write(a.audio_data)
+                audio_clip = AudioFileClip(audio_temp.name)
+                if audio_clip.duration > video_clip.duration:
+                    audio_clip = audio_clip.subclipped(0, video_clip.duration)
 
-        video_clip = video_clip.with_audio(audio_clip)
+            video_clip = video_clip.with_audio(audio_clip)
 
         # Add subtitles
         clip_end_time = clip_start_time + video_clip.duration
         # slice subtitles if the line cannot fit to one row
-        if t.line:
+        if t and t.line:
             cn_subtitles.extend(_split_subtitle(t.line, clip_start_time, clip_end_time, _split_subtitle_cn))
-        if t.line_en:
+        if t and t.line_en:
             en_subtitles.extend(_split_subtitle(t.line_en, clip_start_time, clip_end_time, _split_subtitle_en))
 
         # add cross-fade in or out to every clip
         if i != 0:
             video_clip = CrossFadeIn(duration=_FADE_IN_DURATION_IN_SECONDS).apply(video_clip)
-        if i != len(elements) - 1:
+        if i != len(videos) - 1:
             video_clip = CrossFadeOut(duration=_FADE_OUT_DURATION_IN_SECONDS).apply(video_clip)
             # to overlap 2 clips, end time must deduct with the fade out duration
             clip_end_time = clip_end_time - _FADE_OUT_DURATION_IN_SECONDS
@@ -198,16 +213,22 @@ def _generate_film(req_id: str, tones: List[Tone], videos: List[Video], audios: 
         video_clip = video_clip.with_start(start_time).with_position("center")
         clips.append(video_clip)
 
-    cn_generator = lambda text: TextClip(font=_font, text=text, font_size=24, color="white", stroke_color="#021526",
-                                         horizontal_align="center", vertical_align="bottom", size=clips[0].size,
-                                         margin=(None, -60, None, None))
-    cn_subtitle_clip = SubtitlesClip(cn_subtitles, make_textclip=cn_generator)
+    final_clips = clips
+    if cn_subtitles:
+        cn_generator = lambda text: TextClip(font=_font, text=text, font_size=24, color="white", stroke_color="#021526",
+                                             horizontal_align="center", vertical_align="bottom", size=clips[0].size,
+                                             margin=(None, -60, None, None))
+        cn_subtitle_clip = SubtitlesClip(cn_subtitles, make_textclip=cn_generator)
+        final_clips = final_clips + [cn_subtitle_clip]
 
-    en_generator = lambda text: TextClip(font=_font, text=text, font_size=24, color="white", stroke_color="#021526",
-                                         horizontal_align="center", vertical_align="bottom", size=clips[0].size,
-                                         margin=(None, -30, None, None))
-    en_subtitle_clip = SubtitlesClip(en_subtitles, make_textclip=en_generator)
-    final_video = CompositeVideoClip(clips + [cn_subtitle_clip, en_subtitle_clip])
+    if en_subtitles:
+        en_generator = lambda text: TextClip(font=_font, text=text, font_size=24, color="white", stroke_color="#021526",
+                                             horizontal_align="center", vertical_align="bottom", size=clips[0].size,
+                                             margin=(None, -30, None, None))
+        en_subtitle_clip = SubtitlesClip(en_subtitles, make_textclip=en_generator)
+        final_clips = final_clips + [en_subtitle_clip]
+
+    final_video = CompositeVideoClip(final_clips)
 
     # # Add background music
     # background_music_path = os.path.join(_current_dir, "../../../lib/background_music.mp3")
@@ -264,26 +285,39 @@ class FilmGenerator(Generator):
         tones = self.phase_finder.get_tones()
         videos = self.phase_finder.get_videos()
         audios = self.phase_finder.get_audios()
-
-        if not tones:
-            ERROR("tones not found")
-            raise InvalidParameter("messages", "tones not found")
+        dict_content = self.phase_finder.get_dict_from_message()
+        content_options = self.phase_finder.get_content_options()
+        project_id = get_project_id_from_content_options(content_options)
+        voice_options = dict_content.get("voice_options", {})
+        voice_mode = voice_options.get("mode", VOICE_MODE_GENERATED)
+        if voice_mode not in (VOICE_MODE_GENERATED, VOICE_MODE_ORIGINAL):
+            voice_mode = VOICE_MODE_GENERATED
 
         if not videos:
             ERROR("videos not found")
             raise InvalidParameter("messages", "videos not found")
 
-        if not audios:
-            ERROR("audios not found")
-            raise InvalidParameter("messages", "audios not found")
+        if voice_mode == VOICE_MODE_GENERATED:
+            if not tones:
+                ERROR("tones not found")
+                raise InvalidParameter("messages", "tones not found")
 
-        tones, videos, audios = self._align_assets_by_video_index(tones, videos, audios)
+            if not audios:
+                ERROR("audios not found")
+                raise InvalidParameter("messages", "audios not found")
+
+            tones, videos, audios = self._align_assets_by_video_index(tones, videos, audios)
+        else:
+            videos.sort(key=lambda video: video.index)
 
         if len(tones) > MAX_STORY_BOARD_NUMBER:
             ERROR(f"tones count: {len(tones)} exceed limit")
             raise InvalidParameter("messages", "tones count exceed limit")
 
-        INFO(f"len(tones) = {len(tones)}, len(videos) = {len(videos)}, len(audios) = {len(audios)}")
+        INFO(
+            f"voice_mode = {voice_mode}, len(tones) = {len(tones)}, "
+            f"len(videos) = {len(videos)}, len(audios) = {len(audios)}"
+        )
 
         # Return first
         yield ArkChatCompletionChunk(
@@ -302,17 +336,66 @@ class FilmGenerator(Generator):
         )
 
         video_download_tasks = [asyncio.create_task(self._download_video(v)) for v in videos]
-        audio_download_tasks = [asyncio.create_task(self._download_audio(a)) for a in audios]
+        audio_download_tasks = (
+            [asyncio.create_task(self._download_audio(a)) for a in audios]
+            if voice_mode == VOICE_MODE_GENERATED
+            else []
+        )
         tasks = video_download_tasks + audio_download_tasks
         await asyncio.gather(*tasks)
+
+        storage = AssetStorageService(project_id)
+        storyboard_video_assets = []
+        for video in videos:
+            if not video.video_data:
+                continue
+            try:
+                asset = storage.store_bytes_asset(
+                    "storyboard_videos",
+                    video.index,
+                    video.video_data,
+                    f"shot_{video.index + 1:02d}.mp4",
+                    source_url=video.video_url,
+                    metadata={"video_gen_task_id": video.video_gen_task_id},
+                )
+                video.local_assets = [asset]
+                video.download_url = asset.get("download_url")
+                video.archive_url = f"/v1/assets/projects/{project_id}/archive/storyboard_videos"
+                storyboard_video_assets.append(asset)
+            except Exception as e:
+                ERROR(f"failed to archive storyboard video, index: {video.index}, error: {e}")
 
         # generate film by movie py. since moviepy has potential memory leak problem, a new process is created to run
         # so that memory is automatically released after the process is terminated
         loop = asyncio.get_event_loop()
         film_presiend_url = await loop.run_in_executor(ProcessPoolExecutor(), _generate_film,
-                                                       get_reqid(), tones, videos, audios)
+                                                       get_reqid(), tones, videos, audios, voice_mode)
 
-        content = {"film": Film(url=film_presiend_url).model_dump()}
+        film_assets = []
+        try:
+            film_asset = storage.store_url_asset(
+                "film",
+                0,
+                film_presiend_url,
+                "final",
+                "mp4",
+                metadata={"voice_mode": voice_mode},
+            )
+            if film_asset:
+                film_assets.append(film_asset)
+        except Exception as e:
+            ERROR(f"failed to archive final film, error: {e}")
+
+        content = {
+            "videos": [video.model_dump(exclude={"video_data"}) for video in videos],
+            "film": Film(
+                url=film_presiend_url,
+                local_assets=film_assets,
+                download_url=film_assets[0].get("download_url") if film_assets else None,
+                archive_url=f"/v1/assets/projects/{project_id}/archive/film",
+                all_assets_archive_url=f"/v1/assets/projects/{project_id}/archive-all",
+            ).model_dump(),
+        }
         yield _get_tool_resp(0, json.dumps(content))
         yield _get_tool_resp(1)
 
@@ -329,6 +412,7 @@ class FilmGenerator(Generator):
             ERROR(f"video_url is empty, index: {v.index}")
             raise InvalidParameter("messages", "video_url is empty")
 
+        v.video_url = video_url
         video_data, _ = self.downloader_client.download_to_memory(video_url)
         v.video_data = video_data.read()
         INFO(f"downloaded video, index: {v.index}")

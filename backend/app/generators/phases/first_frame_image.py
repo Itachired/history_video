@@ -11,7 +11,6 @@
 
 import asyncio
 import json
-import os
 import re
 import time
 from typing import AsyncIterable, Dict, List, Optional
@@ -26,19 +25,24 @@ from app.clients.t2i import T2IClient, T2IException
 from app.constants import MAX_STORY_BOARD_NUMBER, API_KEY, T2V_ENDPOINT_ID
 from app.generators.base import Generator
 from app.generators.phase import PhaseFinder, Phase
+from app.generators.phases.knowledge_style import (
+    build_aspect_ratio_prompt,
+    build_background_reference_rule_prompt,
+    build_knowledge_style_prompt,
+    build_user_reference_images_rule_prompt,
+    get_background_reference_url,
+    get_image_size_for_aspect_ratio,
+    get_role_reference_url,
+    should_place_background_reference_first,
+)
+from app.generators.phases.image_generation_limiter import run_limited_image_generation
 from app.logger import ERROR, INFO
 from app.message_utils import extract_dict_from_message
 from app.mode import Mode
 from app.models.first_frame_description import FirstFrameDescription
 from app.models.first_frame_image import FirstFrameImage
 from app.models.role_image import RoleImage
-
-
-def _get_image_generation_concurrency() -> int:
-    try:
-        return max(1, int(os.getenv("IMAGE_GENERATION_CONCURRENCY", "3")))
-    except ValueError:
-        return 3
+from app.services.asset_storage import AssetStorageService, get_project_id_from_content_options
 
 
 def _normalize_role_name(name: str) -> str:
@@ -67,9 +71,22 @@ def _build_role_reference_image_map(role_names: List[str], role_images: List[Rol
 
 def _get_reference_images(
         first_frame_description: FirstFrameDescription,
-        role_reference_image_map: Dict[str, str]
+        role_reference_image_map: Dict[str, str],
+        background_reference_image: Optional[str] = None,
+        uploaded_role_reference_image: Optional[str] = None,
+        background_reference_first: bool = False,
 ) -> List[str]:
     reference_images = []
+
+    def append_reference_image(image: Optional[str]):
+        if image and image not in reference_images:
+            reference_images.append(image)
+
+    if background_reference_first:
+        append_reference_image(background_reference_image)
+
+    append_reference_image(uploaded_role_reference_image)
+
     for character in first_frame_description.characters:
         character_name = _normalize_role_name(character)
         reference_image = role_reference_image_map.get(character_name)
@@ -78,9 +95,40 @@ def _get_reference_images(
                 if role_name in character_name or character_name in role_name:
                     reference_image = image
                     break
-        if reference_image and reference_image not in reference_images:
-            reference_images.append(reference_image)
+        append_reference_image(reference_image)
+
+    append_reference_image(background_reference_image)
     return reference_images
+
+
+def _build_history_knowledge_image_prompt(
+        first_frame_description: FirstFrameDescription,
+        reference_images: List[str],
+        has_background_reference: bool,
+        content_options: Dict,
+) -> str:
+    reference_instruction = ""
+    if reference_images:
+        reference_instruction = (
+            "参考图使用规则：用户上传的任意参考图和已生成角色图都必须共同约束分镜画面。"
+            "角色图用于保持人物外观一致；用户上传参考图用于建立统一画风、色调、光照、材质、镜头质感、场景结构和时代氛围。"
+            "不得逐像素复制参考图，不得照搬参考图中的无关文字或人物。"
+        )
+    if has_background_reference:
+        reference_instruction += (
+            "当前分镜必须看起来属于背景图同一套视觉设计。"
+            "可以根据剧情改变镜头位置和主体动作，但不要让每个分镜机械复刻同一背景。"
+        )
+
+    return (
+        f"{reference_instruction}"
+        f"{build_knowledge_style_prompt(content_options)}\n"
+        f"{build_aspect_ratio_prompt(content_options)}\n"
+        f"{build_user_reference_images_rule_prompt(content_options, 'scene')}\n"
+        f"{build_background_reference_rule_prompt(content_options, 'scene')}\n"
+        f"分镜描述：{first_frame_description.description}\n"
+        "生成历史/知识类短视频首帧画面，画面克制、清晰、信息明确。"
+    )
 
 
 def _get_tool_resp(index: int, content: Optional[str] = None) -> ArkChatCompletionChunk:
@@ -116,7 +164,6 @@ class FirstFrameImageGenerator(Generator):
     request: ArkChatRequest
     phase_finder: PhaseFinder
     mode: Mode
-    image_generation_semaphore: asyncio.Semaphore
 
     def __init__(self, request: ArkChatRequest, mode: Mode.NORMAL):
         super().__init__(request, mode)
@@ -128,7 +175,6 @@ class FirstFrameImageGenerator(Generator):
         self.phase_finder = PhaseFinder(request)
         self.request = request
         self.mode = mode
-        self.image_generation_semaphore = asyncio.Semaphore(_get_image_generation_concurrency())
 
     async def generate(self) -> AsyncIterable[ArkChatResponse]:
         _, first_frame_descriptions = self.phase_finder.get_first_frame_descriptions()
@@ -138,6 +184,21 @@ class FirstFrameImageGenerator(Generator):
             _parse_role_names(role_descriptions_text),
             role_images,
         )
+        content_mode = self.phase_finder.get_content_mode()
+        content_options = self.phase_finder.get_content_options()
+        background_reference_image = (
+            get_background_reference_url(content_options)
+            if content_mode == "history_knowledge"
+            else None
+        )
+        uploaded_role_reference_image = (
+            get_role_reference_url(content_options)
+            if content_mode == "history_knowledge"
+            else None
+        )
+        project_id = get_project_id_from_content_options(content_options)
+        archive_url = f"/v1/assets/projects/{project_id}/archive/storyboard_images"
+        background_reference_first = should_place_background_reference_first(content_options)
 
         if not first_frame_descriptions:
             ERROR("first frame descriptions not found")
@@ -179,24 +240,47 @@ class FirstFrameImageGenerator(Generator):
         generated_first_frame_image_indexes = set([ffi.index for ffi in generated_first_frame_images])
         for index, rd in enumerate(first_frame_descriptions):
             if index not in generated_first_frame_image_indexes:
-                reference_images = _get_reference_images(rd, role_reference_image_map)
-                INFO(f"first frame image index={index}, reference_images_count={len(reference_images)}")
-                tasks.append(asyncio.create_task(self._generate_image(index, rd, reference_images)))
+                reference_images = _get_reference_images(
+                    rd,
+                    role_reference_image_map,
+                    background_reference_image,
+                    uploaded_role_reference_image,
+                    background_reference_first,
+                )
+                INFO(
+                    f"first frame image index={index}, "
+                    f"background_reference_strength={self.phase_finder.get_background_reference_strength()}, "
+                    f"background_reference_used={bool(background_reference_image)}, "
+                    f"reference_images_count={len(reference_images)}"
+                )
+                tasks.append(asyncio.create_task(self._generate_image(index, rd, reference_images, content_options)))
 
         pending = set(tasks)
         content = {
-            "first_frame_images": [role_image.model_dump() for role_image in generated_first_frame_images],
+            "first_frame_images": [
+                {**role_image.model_dump(), "archive_url": role_image.archive_url or archive_url}
+                for role_image in generated_first_frame_images
+            ],
         }
 
-        while pending:
-            done, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
+        try:
+            while pending:
+                done, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
 
-            for task in done:
-                first_frame_image_index, first_frame_images = task.result()
-                content["first_frame_images"].append(FirstFrameImage(
-                    index=first_frame_image_index,
-                    images=first_frame_images,
-                ).model_dump())
+                for task in done:
+                    first_frame_image_index, first_frame_images, local_assets = task.result()
+                    content["first_frame_images"].append(FirstFrameImage(
+                        index=first_frame_image_index,
+                        images=first_frame_images,
+                        local_assets=local_assets,
+                        archive_url=archive_url,
+                    ).model_dump())
+        except asyncio.CancelledError:
+            INFO(f"first frame image generation canceled, cancel pending tasks count={len(pending)}")
+            for task in pending:
+                task.cancel()
+            await asyncio.gather(*pending, return_exceptions=True)
+            raise
 
         yield _get_tool_resp(0, json.dumps(content))
         yield _get_tool_resp(1)
@@ -206,45 +290,76 @@ class FirstFrameImageGenerator(Generator):
             index: int,
             first_frame_description: FirstFrameDescription,
             reference_images: List[str],
+            content_options: Dict,
     ):
         started_at = time.perf_counter()
+        local_assets = []
         try:
             characters = "，".join(first_frame_description.characters)
-            reference_instruction = ""
-            if reference_images:
-                reference_instruction = (
-                    f"请严格参考输入参考图中的角色外观、脸型、毛发/发型、服饰、颜色、体型比例和整体画风。"
-                    f"当前分镜出现角色：{characters}。"
-                    f"不得改变角色身份，不得重新设计角色，不得新增未出现角色。"
-                    f"只根据分镜描述调整姿势、表情、场景和构图。"
+            if self.phase_finder.get_content_mode() == "history_knowledge":
+                prompt = _build_history_knowledge_image_prompt(
+                    first_frame_description,
+                    reference_images,
+                    bool(self.phase_finder.get_background_reference().get("url")),
+                    content_options,
                 )
-            prompt = (
-                f"{reference_instruction}"
-                f"分镜描述：{first_frame_description.description}"
-                f"卡通风格插图，幼儿可爱风格，3D渲染。"
+            else:
+                reference_instruction = ""
+                if reference_images:
+                    reference_instruction = (
+                        f"请严格参考输入参考图中的角色外观、脸型、毛发/发型、服饰、颜色、体型比例和整体画风。"
+                        f"当前分镜出现角色：{characters}。"
+                        f"不得改变角色身份，不得重新设计角色，不得新增未出现角色。"
+                        f"只根据分镜描述调整姿势、表情、场景和构图。"
+                    )
+                prompt = (
+                    f"{build_aspect_ratio_prompt(content_options)}\n"
+                    f"{reference_instruction}"
+                    f"分镜描述：{first_frame_description.description}"
+                    f"卡通风格插图，幼儿可爱风格，3D渲染。"
+                )
+            image_size = get_image_size_for_aspect_ratio(content_options)
+            images = await run_limited_image_generation(
+                self.t2i_client.image_generation,
+                prompt=prompt,
+                model=T2V_ENDPOINT_ID,
+                reference_images=reference_images,
+                size=image_size,
             )
-            async with self.image_generation_semaphore:
-                images = await asyncio.to_thread(
-                    self.t2i_client.image_generation,
-                    prompt=prompt,
-                    model=T2V_ENDPOINT_ID,
-                    reference_images=reference_images,
-                )
             INFO(
                 f"first frame image index={index} finished in {time.perf_counter() - started_at:.2f}s, "
-                f"reference_images_count={len(reference_images)}"
+                f"background_reference_strength={self.phase_finder.get_background_reference_strength()}, "
+                f"background_reference_used={bool(get_background_reference_url(content_options))}, "
+                f"reference_images_count={len(reference_images)}, "
+                f"image_size={image_size}"
             )
+            try:
+                storage = AssetStorageService(get_project_id_from_content_options(content_options))
+                local_assets = [
+                    storage.store_url_asset(
+                        "storyboard_images",
+                        index,
+                        image_url,
+                        f"shot_{index + 1:02d}",
+                        "png",
+                        metadata={"first_frame_description": first_frame_description.description},
+                    )
+                    for image_url in images
+                ]
+                local_assets = [asset for asset in local_assets if asset]
+            except Exception as e:
+                ERROR(f"failed to archive first frame image, index: {index}, error: {e}")
         except T2IException as e:
             ERROR(
                 f"failed to generate image, index: {index}, code: {e.code}, message: {e}, "
                 f"reference_images_count: {len(reference_images)}, elapsed: {time.perf_counter() - started_at:.2f}s"
             )
-            return index, [e.message]
+            return index, [e.message], []
         except Exception as e:
             ERROR(
                 f"failed to generate image, index: {index}, error: {e}, "
                 f"reference_images_count: {len(reference_images)}, elapsed: {time.perf_counter() - started_at:.2f}s"
             )
-            return index, ["failed to generate image"]
+            return index, ["failed to generate image"], []
 
-        return index, images
+        return index, images, local_assets

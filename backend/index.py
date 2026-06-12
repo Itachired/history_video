@@ -12,6 +12,7 @@
 import base64
 import binascii
 import logging
+import mimetypes
 import os
 import uuid
 from io import BytesIO
@@ -25,13 +26,15 @@ load_dotenv(_backend_dir.parent / ".env")
 load_dotenv(_backend_dir / ".env", override=True)
 
 from app.clients.tos import TOSClient
-from app.constants import ARTIFACT_TOS_BUCKET
+from app.constants import API_KEY, ARTIFACT_TOS_BUCKET
 from app.generators.factory import GeneratorFactory
 from app.generators.phase import PhaseFinder, get_phase_from_message
 from app.message_utils import get_last_message
 from app.mode import Mode
+from app.services.asset_storage import AssetStorageService
 
-from fastapi import HTTPException, Request
+from fastapi import HTTPException, Query, Request
+from fastapi.responses import FileResponse
 from arkitect.core.component.llm.model import (
     ArkChatCompletionChunk,
     ArkChatRequest,
@@ -134,6 +137,238 @@ async def upload_reference_image(request: Request):
     }
 
 
+def _file_response(path: Path, filename: str):
+    response = FileResponse(
+        path=str(path),
+        filename=filename,
+        media_type=mimetypes.guess_type(filename)[0] or "application/octet-stream",
+    )
+    if path.suffix.lower() in {".mp4", ".webm", ".mov"}:
+        quoted_filename = filename.replace('"', "")
+        response.headers["Content-Disposition"] = f'inline; filename="{quoted_filename}"'
+    return response
+
+
+async def get_project_manifest(project_id: str):
+    storage = AssetStorageService(project_id)
+    return storage.manifest()
+
+
+async def download_project_asset(project_id: str, asset_id: str):
+    storage = AssetStorageService(project_id)
+    asset = storage.find_asset(asset_id)
+    if not asset or asset.get("status") != "ready":
+        raise HTTPException(status_code=404, detail="asset not found")
+    try:
+        file_path = storage.file_path_for_asset(asset)
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="asset file not found")
+    return _file_response(file_path, asset.get("filename") or file_path.name)
+
+
+async def download_project_phase_archive(project_id: str, phase: str):
+    archive_names = {
+        "role_images": "role_images.zip",
+        "storyboard_images": "storyboard_images.zip",
+        "storyboard_videos": "storyboard_videos.zip",
+        "film": "film.zip",
+    }
+    if phase not in archive_names:
+        raise HTTPException(status_code=400, detail="unsupported archive phase")
+    storage = AssetStorageService(project_id)
+    try:
+        archive_path = storage.build_archive(phase, archive_names[phase], include_manifest=True)
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="no ready assets for phase")
+    return _file_response(archive_path, archive_path.name)
+
+
+async def download_project_all_archive(project_id: str):
+    storage = AssetStorageService(project_id)
+    try:
+        archive_path = storage.build_all_archive()
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="no ready assets")
+    return _file_response(archive_path, archive_path.name)
+
+
+async def download_storyboard_video_task(project_id: str, index: int, task_id: str):
+    from volcenginesdkarkruntime import Ark
+
+    storage = AssetStorageService(project_id)
+    asset_id = f"storyboard_videos_{index + 1:02d}"
+    asset = storage.find_asset(asset_id)
+    if asset and asset.get("status") == "ready":
+        file_path = storage.file_path_for_asset(asset)
+        return _file_response(file_path, asset.get("filename") or file_path.name)
+
+    client = Ark(api_key=API_KEY, region="cn-beijing")
+    task_obj = client.content_generation.tasks.get(task_id=task_id)
+    if task_obj.status != "succeeded":
+        raise HTTPException(status_code=409, detail="video task is not completed")
+    video_url = task_obj.content.video_url
+    if not video_url:
+        raise HTTPException(status_code=404, detail="video url is empty")
+
+    asset = storage.store_url_asset(
+        "storyboard_videos",
+        index,
+        video_url,
+        f"shot_{index + 1:02d}",
+        "mp4",
+        metadata={"video_gen_task_id": task_id},
+    )
+    if not asset or asset.get("status") != "ready":
+        raise HTTPException(status_code=500, detail="failed to store video asset")
+    file_path = storage.file_path_for_asset(asset)
+    return _file_response(file_path, asset.get("filename") or file_path.name)
+
+
+def _absolute_url(request: Request, path: str):
+    if path.startswith("http://") or path.startswith("https://"):
+        return path
+    return f"{str(request.base_url).rstrip('/')}{path if path.startswith('/') else f'/{path}'}"
+
+
+def _task_id_from_asset(asset: dict):
+    return asset.get("video_gen_task_id") or asset.get("metadata", {}).get("video_gen_task_id")
+
+
+def _sync_storyboard_video_asset(request: Request, client, storage: AssetStorageService, asset: dict):
+    task_id = _task_id_from_asset(asset)
+    index = asset.get("index")
+    if not task_id or index is None:
+        return asset
+
+    if asset.get("status") == "ready":
+        return asset
+
+    task_obj = client.content_generation.tasks.get(task_id=task_id)
+    payload = task_obj.model_dump(exclude_none=True)
+    status = payload.get("status")
+
+    if status == "succeeded":
+        video_url = payload.get("content", {}).get("video_url")
+        if video_url:
+            synced_asset = storage.store_url_asset(
+                "storyboard_videos",
+                index,
+                video_url,
+                f"shot_{index + 1:02d}",
+                "mp4",
+                metadata={"video_gen_task_id": task_id},
+            )
+            return synced_asset or asset
+    if status == "failed":
+        error = payload.get("error") or {}
+        return storage.register_video_task_asset(
+            "storyboard_videos",
+            index,
+            task_id,
+            status="failed",
+            message=error.get("message") or "video generation failed",
+            metadata={"error": error},
+        )
+    if status:
+        return storage.register_video_task_asset(
+            "storyboard_videos",
+            index,
+            task_id,
+            status=status,
+        )
+    return asset
+
+
+async def sync_project_storyboard_videos(request: Request, project_id: str):
+    from volcenginesdkarkruntime import Ark
+
+    storage = AssetStorageService(project_id)
+    client = Ark(api_key=API_KEY, region="cn-beijing")
+    assets = [
+        asset
+        for asset in storage.manifest().get("assets", [])
+        if asset.get("phase") == "storyboard_videos"
+    ]
+    synced_assets = []
+    for asset in assets:
+        try:
+            synced_assets.append(_sync_storyboard_video_asset(request, client, storage, asset))
+        except Exception as exc:
+            LOGGER.exception("failed to sync storyboard video asset: %s", asset.get("asset_id"))
+            synced_assets.append({
+                **asset,
+                "status": "sync_failed",
+                "message": str(exc),
+            })
+    return {
+        "project_id": project_id,
+        "assets": sorted(synced_assets, key=lambda item: item.get("index", 0)),
+    }
+
+
+async def get_video_generation_task(
+    request: Request,
+    task_id: str,
+    project_id: str = Query(default=""),
+    index: int = Query(default=-1),
+):
+    from volcenginesdkarkruntime import Ark
+
+    client = Ark(api_key=API_KEY, region="cn-beijing")
+    try:
+        task_obj = client.content_generation.tasks.get(task_id=task_id)
+    except Exception as exc:
+        LOGGER.exception("failed to get video generation task: %s", task_id)
+        raise HTTPException(status_code=502, detail=f"failed to get video generation task: {exc}")
+
+    payload = task_obj.model_dump(exclude_none=True)
+    status = payload.get("status")
+    local_asset = None
+    if project_id and index >= 0:
+        storage = AssetStorageService(project_id)
+        existing_asset = storage.find_phase_asset("storyboard_videos", index)
+        if existing_asset and existing_asset.get("status") == "ready":
+            local_asset = existing_asset
+        elif existing_asset:
+            local_asset = _sync_storyboard_video_asset(request, client, storage, existing_asset)
+        elif status == "succeeded":
+            video_url = payload.get("content", {}).get("video_url")
+            if video_url:
+                local_asset = storage.store_url_asset(
+                    "storyboard_videos",
+                    index,
+                    video_url,
+                    f"shot_{index + 1:02d}",
+                    "mp4",
+                    metadata={"video_gen_task_id": task_id},
+                )
+        elif status == "failed":
+            error = payload.get("error") or {}
+            local_asset = storage.register_video_task_asset(
+                "storyboard_videos",
+                index,
+                task_id,
+                status="failed",
+                message=error.get("message") or "video generation failed",
+                metadata={"error": error},
+            )
+        elif status:
+            local_asset = storage.register_video_task_asset(
+                "storyboard_videos",
+                index,
+                task_id,
+                status=status,
+            )
+
+    if local_asset:
+        payload["local_asset"] = local_asset
+        if local_asset.get("status") == "ready" and local_asset.get("download_url"):
+            payload.setdefault("content", {})
+            payload["content"]["video_url"] = _absolute_url(request, local_asset["download_url"])
+
+    return payload
+
+
 if __name__ == "__main__":
     port = os.getenv("_FAAS_RUNTIME_PORT")
     set_resource_type(os.getenv("RESOURCE_TYPE") or "")
@@ -155,5 +390,40 @@ if __name__ == "__main__":
         "/v1/assets/upload-reference-image",
         upload_reference_image,
         methods=["POST", "OPTIONS"],
+    )
+    server.app.add_api_route(
+        "/v1/assets/projects/{project_id}/manifest",
+        get_project_manifest,
+        methods=["GET"],
+    )
+    server.app.add_api_route(
+        "/v1/assets/projects/{project_id}/files/{asset_id}",
+        download_project_asset,
+        methods=["GET"],
+    )
+    server.app.add_api_route(
+        "/v1/assets/projects/{project_id}/archive/{phase}",
+        download_project_phase_archive,
+        methods=["GET"],
+    )
+    server.app.add_api_route(
+        "/v1/assets/projects/{project_id}/archive-all",
+        download_project_all_archive,
+        methods=["GET"],
+    )
+    server.app.add_api_route(
+        "/v1/assets/projects/{project_id}/storyboard-videos/{index}/{task_id}",
+        download_storyboard_video_task,
+        methods=["GET"],
+    )
+    server.app.add_api_route(
+        "/v1/assets/projects/{project_id}/storyboard-videos/sync",
+        sync_project_storyboard_videos,
+        methods=["POST", "GET", "OPTIONS"],
+    )
+    server.app.add_api_route(
+        "/v1/video-tasks/{task_id}",
+        get_video_generation_task,
+        methods=["GET"],
     )
     server.run(app=server.app, port=int(port) if port else 8888)

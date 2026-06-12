@@ -23,6 +23,7 @@ const LOOP_INETRVAL = 3000;
 
 export interface ResultType extends Partial<GetVideoGenTaskResponse> {
   Error?: string;
+  local_asset?: Record<string, any>;
 }
 
 const INITIAL_RESULT: ResultType = {
@@ -33,24 +34,29 @@ const INITIAL_RESULT: ResultType = {
 export const useRefetchRunningTask = (updateVideo: (value: ResultType) => void) => {
   const { api } = useContext(InjectContext);
   const lock = useRef(true);
+  const runSeq = useRef(0);
 
   useUnmount(() => {
     lock.current = false;
   });
 
-  const run = useCallback(async (Id: string): Promise<ResultType> => {
+  const run = useCallback(async (
+    Id: string,
+    options: { ProjectId?: string; Index?: number } = {},
+  ): Promise<ResultType> => {
+    const currentRunSeq = ++runSeq.current;
     if (!api.GetVideoGenTask) {
       return INITIAL_RESULT;
     }
     try {
-      while (lock.current) {
-        await sleep(LOOP_INETRVAL);
-        const task = await api.GetVideoGenTask({ Id }, { showError: false });
+      while (lock.current && currentRunSeq === runSeq.current) {
+        const task = await api.GetVideoGenTask({ Id, ...options }, { showError: false });
         const currentPhase = task.status as Phase;
         updateVideo(task as ResultType);
         if ([Phase.PhaseFailed, Phase.PhaseCompleted].includes(currentPhase)) {
           return task as ResultType;
         }
+        await sleep(LOOP_INETRVAL);
       }
       return INITIAL_RESULT;
     } catch (e: any) {

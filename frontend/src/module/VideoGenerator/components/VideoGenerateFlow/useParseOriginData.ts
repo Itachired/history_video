@@ -63,7 +63,7 @@ export const useParseOriginData = (messages: ComplexMessage) => {
     return matchRoleDescription(messageItem.content);
   };
 
-  const parsePhaseRoleImage = (botMessage: BotMessage): { index: number; images: string[] }[] | undefined => {
+  const parsePhaseRoleImage = (botMessage: BotMessage): Record<string, any>[] | undefined => {
     const { versions, finish, currentVersion } = botMessage;
     if (!finish) {
       return undefined;
@@ -76,7 +76,7 @@ export const useParseOriginData = (messages: ComplexMessage) => {
       const parsedData = JSON.parse(messageItem.content);
       // 数据在下面属性里
       if (UserConfirmationDataKey.RoleImage in parsedData) {
-        return parsedData.role_images as { index: number; images: string[] }[];
+        return parsedData.role_images as Record<string, any>[];
       }
       return [];
     } catch {
@@ -93,7 +93,7 @@ export const useParseOriginData = (messages: ComplexMessage) => {
     return matchFirstFrameDescription(messageItem.content);
   };
 
-  const parsePhaseFirstFrameImage = (botMessage: BotMessage): { index: number; images: string[] }[] | undefined => {
+  const parsePhaseFirstFrameImage = (botMessage: BotMessage): Record<string, any>[] | undefined => {
     const { versions, finish, currentVersion } = botMessage;
     if (!finish) {
       return undefined;
@@ -106,7 +106,7 @@ export const useParseOriginData = (messages: ComplexMessage) => {
       const parsedData = JSON.parse(messageItem.content);
       // 数据在下面属性里
       if (UserConfirmationDataKey.FirstFrameImages in parsedData) {
-        return parsedData.first_frame_images as { index: number; images: string[] }[];
+        return parsedData.first_frame_images as Record<string, any>[];
       }
       return [];
     } catch {
@@ -123,7 +123,15 @@ export const useParseOriginData = (messages: ComplexMessage) => {
     return matchVideoDescription(messageItem.content);
   };
 
-  const parsePhaseVideo = (botMessage: BotMessage): { index: number; videoId: string }[] | undefined => {
+  const parsePhaseVideo = (
+    botMessage: BotMessage,
+  ): {
+    index: number;
+    videoId: string;
+    downloadUrl?: string;
+    videoUrl?: string;
+    localAssets?: Record<string, any>[];
+  }[] | undefined => {
     const { versions, finish, currentVersion } = botMessage;
     if (!finish) {
       return undefined;
@@ -136,10 +144,21 @@ export const useParseOriginData = (messages: ComplexMessage) => {
       const parsedData = JSON.parse(messageItem.content);
       // 数据在下面属性里
       if (UserConfirmationDataKey.Videos in parsedData) {
-        return parsedData.videos.map((item: { index: number; video_gen_task_id: string }) => ({
-          index: item.index,
-          videoId: item.video_gen_task_id,
-        }));
+        return parsedData.videos.map(
+          (item: {
+            index: number;
+            video_gen_task_id: string;
+            download_url?: string;
+            video_url?: string;
+            local_assets?: Record<string, any>[];
+          }) => ({
+            index: item.index,
+            videoId: item.video_gen_task_id,
+            downloadUrl: item.download_url,
+            videoUrl: item.video_url,
+            localAssets: item.local_assets,
+          }),
+        );
       }
       return [];
     } catch {
@@ -261,9 +280,20 @@ export const useParseOriginData = (messages: ComplexMessage) => {
                 assemblyData.push({
                   key: item.index,
                   versions: [...item.images],
+                  extra: {
+                    localAssets: item.local_assets,
+                    downloadUrl: item.download_url,
+                    archiveUrl: item.archive_url,
+                  },
                 });
               } else {
                 assemblyData[index].versions.push(...item.images);
+                assemblyData[index].extra = {
+                  ...assemblyData[index].extra,
+                  localAssets: item.local_assets || assemblyData[index].extra?.localAssets,
+                  downloadUrl: item.download_url || assemblyData[index].extra?.downloadUrl,
+                  archiveUrl: item.archive_url || assemblyData[index].extra?.archiveUrl,
+                };
               }
             });
           });
@@ -304,11 +334,22 @@ export const useParseOriginData = (messages: ComplexMessage) => {
                 assemblyData.push({
                   key: item.index,
                   versions: [...unique<string>(item.images)],
+                  extra: {
+                    localAssets: item.local_assets,
+                    downloadUrl: item.download_url,
+                    archiveUrl: item.archive_url,
+                  },
                 });
               } else {
                 assemblyData[index].versions = unique<string>([...assemblyData[index].versions, ...item.images]).slice(
                   -4,
                 );
+                assemblyData[index].extra = {
+                  ...assemblyData[index].extra,
+                  localAssets: item.local_assets || assemblyData[index].extra?.localAssets,
+                  downloadUrl: item.download_url || assemblyData[index].extra?.downloadUrl,
+                  archiveUrl: item.archive_url || assemblyData[index].extra?.archiveUrl,
+                };
               }
             });
           });
@@ -349,9 +390,20 @@ export const useParseOriginData = (messages: ComplexMessage) => {
                 assemblyData.push({
                   key: item.index,
                   versions: [item.videoId],
+                  extra: {
+                    downloadUrl: item.downloadUrl,
+                    videoUrl: item.videoUrl,
+                    localAssets: item.localAssets,
+                  },
                 });
               } else {
                 assemblyData[index].versions.push(item.videoId);
+                assemblyData[index].extra = {
+                  ...assemblyData[index].extra,
+                  downloadUrl: item.downloadUrl || assemblyData[index].extra?.downloadUrl,
+                  videoUrl: item.videoUrl || assemblyData[index].extra?.videoUrl,
+                  localAssets: item.localAssets || assemblyData[index].extra?.localAssets,
+                };
               }
             });
           });

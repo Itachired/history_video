@@ -29,12 +29,17 @@ from app.clients.tos import TOSClient
 from app.constants import ARTIFACT_TOS_BUCKET, MAX_STORY_BOARD_NUMBER, API_KEY, CGT_ENDPOINT_ID
 from app.generators.base import Generator
 from app.generators.phase import Phase, PhaseFinder
+from app.generators.phases.knowledge_style import build_aspect_ratio_prompt, get_video_ratio_for_aspect_ratio
 from app.logger import ERROR, INFO
 from app.message_utils import extract_dict_from_message
 from app.mode import Mode
 from app.models.first_frame_image import FirstFrameImage
 from app.models.video import Video
 from app.models.video_description import VideoDescription
+from app.services.asset_storage import AssetStorageService, get_project_id_from_content_options
+
+VIDEO_TASK_SUBMIT_CONCURRENCY = 4
+STORYBOARD_VIDEO_PHASE = "storyboard_videos"
 
 
 def _merge_video_descriptions_and_first_frame_images(video_descriptions: List[VideoDescription],
@@ -128,6 +133,7 @@ class VideoGenerator(Generator):
 
         # handle case when some assets are already provided, only partial set of assets needs to be generated
         generated_videos: List[Video] = []
+        force_regenerate_indexes = set()
         if self.mode == Mode.REGENERATION:
             dict_content = extract_dict_from_message(self.request.messages[-1].content)
             videos_json = dict_content.get("videos", [])
@@ -135,10 +141,17 @@ class VideoGenerator(Generator):
                 video = Video.model_validate(v)
                 if video.video_gen_task_id:
                     generated_videos.append(video)
+                else:
+                    force_regenerate_indexes.add(video.index)
 
         INFO(f"generated_videos: {generated_videos}")
 
         merged = _merge_video_descriptions_and_first_frame_images(video_descriptions, first_frame_images)
+        content_options = self.phase_finder.get_content_options()
+        project_id = get_project_id_from_content_options(content_options)
+        storage = AssetStorageService(project_id)
+        archive_url = f"/v1/assets/projects/{project_id}/archive/storyboard_videos"
+        video_ratio = get_video_ratio_for_aspect_ratio(content_options)
 
         # Return first
         yield ArkChatCompletionChunk(
@@ -156,51 +169,178 @@ class VideoGenerator(Generator):
             object="chat.completion.chunk"
         )
 
+        submit_semaphore = asyncio.Semaphore(VIDEO_TASK_SUBMIT_CONCURRENCY)
         tasks = []
         generated_video_indexes = set([v.index for v in generated_videos])
         for index, video_descriptions, first_frame_image in merged:
+            if index in generated_video_indexes:
+                continue
+
+            existing_video = self._video_from_existing_asset(storage, index, archive_url)
+            if existing_video and index not in force_regenerate_indexes:
+                generated_videos.append(existing_video)
+                generated_video_indexes.add(index)
+                continue
+
             if index not in generated_video_indexes:
                 tasks.append(asyncio.create_task(
-                    self._process_image(index, video_descriptions.description, first_frame_image.images[0])))
+                    self._process_image(
+                        index,
+                        video_descriptions.description,
+                        first_frame_image.images[0],
+                        content_options,
+                        video_ratio,
+                        submit_semaphore,
+                        storage,
+                        archive_url,
+                    )
+                ))
 
         pending = set(tasks)
-        content = {"videos": [role_image.model_dump() for role_image in generated_videos], }
+        content = {
+            "videos": [
+                {
+                    **video.model_dump(exclude={"video_data"}),
+                    "download_url": video.download_url
+                    or f"/v1/assets/projects/{project_id}/storyboard-videos/{video.index}/{video.video_gen_task_id}",
+                    "archive_url": video.archive_url or archive_url,
+                }
+                for video in generated_videos
+            ],
+        }
 
         while pending:
             done, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
 
             for task in done:
-                video_index, video_gen_task_id = task.result()
-                content["videos"].append(Video(
-                    index=video_index,
-                    video_gen_task_id=video_gen_task_id
-                ).model_dump())
+                video = task.result()
+                content["videos"].append(video.model_dump())
+
+        content["videos"] = sorted(content["videos"], key=lambda item: item.get("index", 0))
 
         yield _get_tool_resp(0, json.dumps(content))
         yield _get_tool_resp(1)
 
-    async def _process_image(self, index: int, prompt: str, image_url: str) -> Tuple[int, str]:
+    def _create_video_task(self, video_prompt: str, image_url: str, video_ratio: str):
+        return self.content_generation_client.content_generation.tasks.create(
+            model=CGT_ENDPOINT_ID,
+            content=[
+                {
+                    "type": "text",
+                    "text": video_prompt,
+                },
+                {
+                    "type": "image_url",
+                    "image_url": {
+                        "url": image_url,
+                    },
+                },
+            ],
+            extra_body={
+                "ratio": video_ratio,
+            },
+        )
+
+    def _video_from_existing_asset(
+            self,
+            storage: AssetStorageService,
+            index: int,
+            archive_url: str,
+    ) -> Optional[Video]:
+        asset = storage.find_phase_asset(STORYBOARD_VIDEO_PHASE, index)
+        if not asset:
+            return None
+
+        task_id = asset.get("video_gen_task_id") or asset.get("metadata", {}).get("video_gen_task_id")
+        if not task_id:
+            return None
+
+        return Video(
+            index=index,
+            video_gen_task_id=task_id,
+            local_assets=[asset],
+            download_url=asset.get("download_url") or storage.local_download_url(asset.get("asset_id")),
+            archive_url=archive_url,
+        )
+
+    def _build_video_safety_prompt(self, content_options: dict) -> str:
+        if content_options.get("content_mode") != "history_knowledge":
+            return ""
+        return (
+            "# 历史科普视频安全表达\n"
+            "- 将起义、镇压、战争、武器、伤亡等内容转化为地图推进、时间线、文献翻页、远景人群剪影、会议厅、城市街景或符号化图解。\n"
+            "- 不生成血腥、受伤、攻击、处决、尸体、近距离武器挥舞、恐怖表情或煽动性冲突画面。\n"
+            "- 人群运动保持克制，可表现为远景聚集、缓慢移动、旗帜或文字标记变化，整体风格客观中立。"
+        )
+
+    async def _process_image(
+            self,
+            index: int,
+            prompt: str,
+            image_url: str,
+            content_options: dict,
+            video_ratio: str,
+            submit_semaphore: asyncio.Semaphore,
+            storage: AssetStorageService,
+            archive_url: str,
+    ) -> Video:
         try:
-            # Create Video Gen Task
-            resp = self.content_generation_client.content_generation.tasks.create(
-                model=CGT_ENDPOINT_ID,
-                content=[
-                    {
-                        "type": "text",
-                        "text": prompt,
-                    },
-                    {
-                        "type": "image_url",
-                        "image_url": {
-                            "url": image_url,
-                        },
-                    },
-                ],
+            video_prompt = (
+                f"{prompt}\n"
+                f"{build_aspect_ratio_prompt(content_options)}\n"
+                f"{self._build_video_safety_prompt(content_options)}\n"
+                f"视频必须保持输入首帧的 {video_ratio} 画幅，不要拉伸、裁切主体或改变画幅方向。"
             )
+            async with submit_semaphore:
+                resp = await asyncio.to_thread(
+                    self._create_video_task,
+                    video_prompt,
+                    image_url,
+                    video_ratio,
+                )
             video_gen_task_id = resp.id
+            asset = storage.register_video_task_asset(
+                STORYBOARD_VIDEO_PHASE,
+                index,
+                video_gen_task_id,
+                status="submitted",
+                metadata={
+                    "prompt": prompt,
+                    "image_url": image_url,
+                    "ratio": video_ratio,
+                },
+            )
+            INFO(f"created video generation task, index={index}, ratio={video_ratio}, task_id={video_gen_task_id}")
 
         except Exception as e:
-            ERROR(f"fail to generate video, err: {e}, prompt: {prompt}, image_url: {image_url}, model: {CGT_ENDPOINT_ID}")
-            return index, "failed to generate video"
+            ERROR(
+                f"fail to generate video, err: {e}, prompt: {prompt}, image_url: {image_url}, "
+                f"model: {CGT_ENDPOINT_ID}, ratio: {video_ratio}"
+            )
+            asset = storage.register_video_task_asset(
+                STORYBOARD_VIDEO_PHASE,
+                index,
+                "failed to generate video",
+                status="failed",
+                message=str(e),
+                metadata={
+                    "prompt": prompt,
+                    "image_url": image_url,
+                    "ratio": video_ratio,
+                },
+            )
+            return Video(
+                index=index,
+                video_gen_task_id="failed to generate video",
+                local_assets=[asset],
+                download_url=asset.get("download_url"),
+                archive_url=archive_url,
+            )
 
-        return index, video_gen_task_id
+        return Video(
+            index=index,
+            video_gen_task_id=video_gen_task_id,
+            local_assets=[asset],
+            download_url=asset.get("download_url"),
+            archive_url=archive_url,
+        )

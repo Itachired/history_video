@@ -22,6 +22,7 @@ from app.constants import LLM_ENDPOINT_ID
 from app.generators.base import Generator
 from app.generators.phase import Phase, PhaseFinder
 from app.generators.phases.common import get_correction_completion_chunk
+from app.generators.phases.knowledge_style import build_knowledge_style_prompt
 from app.logger import ERROR
 from app.mode import Mode
 from app.output_parsers import parse_first_frame_description
@@ -75,6 +76,46 @@ phase=FirstFrameDescription
 """
 )
 
+HISTORY_KNOWLEDGE_FIRST_FRAME_DESCRIPTION_SYSTEM_PROMPT = ArkMessage(
+    role="system",
+    content="""# 角色
+你是历史/知识类短视频画面描述优化师。你将根据 StoryBoard 和 RoleDescription，生成每个分镜首帧视频画面的内容描述。
+
+# 任务描述与要求
+- 风格：历史知识类动画插画，3D 渲染，画面清晰、克制、适合解说短视频。
+- 画面描述应服务于知识讲解，避免低龄儿童故事化表达。
+- 每个分镜的首帧描述要简洁明了，字数不超过 200 字。
+- 每个分镜的描述中必须包含场景信息。
+- 每个分镜的描述中必须按照枚举出现的角色名称，且与「RoleDescription」中的角色名称保持一致。
+- 分镜数量需要和「StoryBoard」中的分镜数量严格保持一致。
+- 对战争、暴力、处决、死亡等内容只做象征性或概括性画面表达，例如人群剪影、历史建筑、文献、地图、会议场景，不渲染血腥细节。
+- [重要] 如果用户提示词内容没问题，在正常返回结果前加上"phase=FirstFrameDescription"的前缀。
+
+# 输出按照以下格式回答：
+phase=FirstFrameDescription
+分镜1：
+角色：旁白
+首帧描述：历史知识类动画插画，3D渲染，画面描述。
+
+分镜2：
+角色：历史人物，旁白
+首帧描述：历史知识类动画插画，3D渲染，画面描述。
+"""
+)
+
+
+def _select_first_frame_description_prompt(phase_finder: PhaseFinder) -> ArkMessage:
+    content_mode = phase_finder.get_content_mode()
+    if content_mode == "history_knowledge":
+        return ArkMessage(
+            role="system",
+            content=f"{HISTORY_KNOWLEDGE_FIRST_FRAME_DESCRIPTION_SYSTEM_PROMPT.content}\n\n"
+                    f"{build_knowledge_style_prompt(phase_finder.get_content_options())}\n\n"
+                    "# 背景参考图使用要求\n"
+                    "- 如果提供了背景参考图，每个首帧描述都要尽量体现其整体氛围和视觉元素，除非该分镜内容明显不适合该背景。"
+        )
+    return FIRST_FRAME_DESCRIPTION_SYSTEM_PROMPT
+
 
 class FirstFrameDescriptionGenerator(Generator):
     llm_client: LLMClient
@@ -114,7 +155,7 @@ class FirstFrameDescriptionGenerator(Generator):
                 raise InvalidParameter("messages", "storyboards not found")
 
             messages = [
-                FIRST_FRAME_DESCRIPTION_SYSTEM_PROMPT,
+                _select_first_frame_description_prompt(self.phase_finder),
                 ArkMessage(role="assistant", content=f"phase={Phase.SCRIPT.value}\n{script}"),
                 ArkMessage(role="user", content="下一步"),
                 ArkMessage(role="assistant", content=f"phase={Phase.STORY_BOARD.value}\n{storyboards}"),

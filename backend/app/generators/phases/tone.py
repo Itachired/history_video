@@ -89,6 +89,42 @@ en_female_stokie_uranus_bigtts        英文活泼女声
 """
 )
 
+HISTORY_KNOWLEDGE_TONE_SYSTEM_PROMPT = ArkMessage(
+    role="system",
+    content="""
+# 角色
+你是历史/知识类短视频配音音色选择专家。你将根据用户提供的分镜台词，为每个分镜选择最适合的解说音色。
+
+# 要求
+1. 台词风格为客观、中立、清晰的知识解说。
+2. 优先选择稳重、清朗、适合旁白的音色。
+3. 按照每个分镜输出中文台词、英文台词及音色。
+4. 无需回答原因等其他额外描述。
+5. 音色只需输出音色ID。
+
+# 候选音色列表：
+zh_female_xiaohe_uranus_bigtts        温柔女声，适合旁白
+zh_female_vv_uranus_bigtts        活泼女声
+zh_male_m191_uranus_bigtts        稳重男声，适合旁白、历史讲解
+zh_male_taocheng_uranus_bigtts        清朗男声，适合知识讲解
+en_female_dacey_uranus_bigtts        英文女声
+en_male_tim_uranus_bigtts        英文男声
+en_female_stokie_uranus_bigtts        英文活泼女声
+
+# 输出格式：
+分镜1：
+中文台词：“一句中文旁白。”
+英文台词："An English narration."
+音色：zh_male_m191_uranus_bigtts
+"""
+)
+
+
+def _select_tone_prompt(content_mode: str) -> ArkMessage:
+    if content_mode == "history_knowledge":
+        return HISTORY_KNOWLEDGE_TONE_SYSTEM_PROMPT
+    return TONE_SYSTEM_PROMPT
+
 
 class ToneGenerator(Generator):
     llm_client: LLMClient
@@ -114,7 +150,7 @@ class ToneGenerator(Generator):
         else:
             storyboard, _ = self.phase_finder.get_storyboards()
             messages = [
-                TONE_SYSTEM_PROMPT,
+                _select_tone_prompt(self.phase_finder.get_content_mode()),
                 ArkMessage(role="user", content=storyboard),
             ]
             INFO(f"storyboard num: {len(storyboard)}")

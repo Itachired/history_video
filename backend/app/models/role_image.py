@@ -9,7 +9,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel
 
@@ -19,6 +19,8 @@ class RoleImage(BaseModel):
     images: List[str]
     reference_image: Optional[str] = None
     locked: Optional[bool] = True
+    local_assets: Optional[List[Dict[str, Any]]] = None
+    archive_url: Optional[str] = None
 
     def get_reference_image(self) -> Optional[str]:
         if self.locked is False:

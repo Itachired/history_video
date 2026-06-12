@@ -1,7 +1,7 @@
 // Copyright (c) 2025 Bytedance Ltd. and/or its affiliates
 // Licensed under the 【火山方舟】原型应用软件自用许可协议
 // you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at 
+// You may obtain a copy of the License at
 //     https://www.volcengine.com/docs/82379/1433703
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -9,7 +9,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-import { BotMessage, Message, UserMessage } from '@/components/ChatWindowV2/context';
+import type {
+  BotMessage,
+  Message,
+  UserMessage,
+} from '@/components/ChatWindowV2/context';
 
 export enum VideoGeneratorMessageType {
   Text = 'text',
@@ -63,7 +67,11 @@ export interface ComplexMessage {
   phaseMessageMap: Record<string, VideoGeneratorBotMessage[]>;
 }
 
-export type RenderedMessages = (VideoGeneratorUserMessage | VideoGeneratorBotMessage | ComplexMessage)[];
+export type RenderedMessages = (
+  | VideoGeneratorUserMessage
+  | VideoGeneratorBotMessage
+  | ComplexMessage
+)[];
 
 export enum FlowPhase {
   GenerateRole = 'GenerateRole', // 生成故事角色
@@ -77,6 +85,8 @@ export enum FlowPhase {
 // 后端返回的原始key + 前端要传给后端的key
 export enum UserConfirmationDataKey {
   Script = 'script',
+  ScriptOptions = 'script_options',
+  ContentOptions = 'content_options',
   StoryBoards = 'storyboards',
   RoleDescriptions = 'role_descriptions',
   RoleImage = 'role_images',
@@ -86,23 +96,89 @@ export enum UserConfirmationDataKey {
   Videos = 'videos',
   Tones = 'tones',
   Audios = 'audios',
+  VoiceOptions = 'voice_options',
   Film = 'film',
 }
+
+export enum VoiceMode {
+  Generated = 'generated',
+  Original = 'original',
+}
+
+export enum ScriptMode {
+  Generated = 'generated',
+  Uploaded = 'uploaded',
+}
+
+export enum ContentMode {
+  Story = 'story',
+  HistoryKnowledge = 'history_knowledge',
+}
+
+export enum KnowledgeStyle {
+  Documentary = 'documentary',
+  ClassroomDiagram = 'classroom_diagram',
+  MuseumExhibit = 'museum_exhibit',
+  Infographic = 'infographic',
+}
+
+export enum BackgroundReferenceStrength {
+  Normal = 'normal',
+  Strong = 'strong',
+  Strict = 'strict',
+}
+
+export enum AspectRatio {
+  Landscape = '16:9',
+  Portrait = '9:16',
+}
+
+export interface ReferenceImage {
+  url?: string;
+  object_key?: string;
+  file_name?: string;
+}
+
+// Media phase payloads come from streamed backend JSON and keep phase-specific
+// fields that are parsed by the workflow UI.
+// biome-ignore lint/suspicious/noExplicitAny: phase payloads are intentionally open-ended.
+export type PhasePayload = Record<string, any>;
 
 // 媒体数据为原结构，其他为普通字符串
 export interface UserConfirmationData {
   [UserConfirmationDataKey.Script]?: string;
+  [UserConfirmationDataKey.ScriptOptions]?: {
+    mode?: ScriptMode;
+    file_name?: string;
+  };
+  [UserConfirmationDataKey.ContentOptions]?: {
+    project_id?: string;
+    mode?: ContentMode;
+    style?: KnowledgeStyle;
+    style_prompt?: string;
+    aspect_ratio?: AspectRatio;
+    background_reference?: ReferenceImage;
+    background_reference_strength?: BackgroundReferenceStrength;
+    role_reference?: ReferenceImage;
+  };
   [UserConfirmationDataKey.StoryBoards]?: string;
   [UserConfirmationDataKey.RoleDescriptions]?: string;
   [UserConfirmationDataKey.FirstFrameDescriptions]?: string;
   [UserConfirmationDataKey.VideoDescriptions]?: string;
-  [UserConfirmationDataKey.RoleImage]?: Record<string, any>[];
-  [UserConfirmationDataKey.FirstFrameImages]?: Record<string, any>[];
-  [UserConfirmationDataKey.Videos]?: Record<string, any>[];
-  [UserConfirmationDataKey.Tones]?: Record<string, any>[];
-  [UserConfirmationDataKey.Audios]?: Record<string, any>[];
+  [UserConfirmationDataKey.RoleImage]?: PhasePayload[];
+  [UserConfirmationDataKey.FirstFrameImages]?: PhasePayload[];
+  [UserConfirmationDataKey.Videos]?: PhasePayload[];
+  [UserConfirmationDataKey.Tones]?: PhasePayload[];
+  [UserConfirmationDataKey.Audios]?: PhasePayload[];
+  [UserConfirmationDataKey.VoiceOptions]?: {
+    mode?: VoiceMode;
+  };
   [UserConfirmationDataKey.Film]?: {
     url?: string;
+    local_assets?: PhasePayload[];
+    download_url?: string;
+    archive_url?: string;
+    all_assets_archive_url?: string;
   };
 }
 

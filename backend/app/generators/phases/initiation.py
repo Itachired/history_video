@@ -17,7 +17,7 @@ from arkitect.core.errors import InternalServiceError
 from app.clients.llm import LLMClient
 from app.constants import LLM_ENDPOINT_ID
 from app.generators.base import Generator
-from app.generators.phase import Phase
+from app.generators.phase import Phase, PhaseFinder
 from app.generators.phases.role_description import RoleDescriptionGenerator
 from app.generators.phases.script import ScriptGenerator
 from app.generators.phases.storyboard import StoryBoardGenerator
@@ -78,6 +78,7 @@ class InitiationGenerator(Generator):
     llm_client: LLMClient
     request: ArkChatRequest
     mode: Mode
+    phase_finder: PhaseFinder
 
     def __init__(self, request: ArkChatRequest, mode: Mode.NORMAL):
         super().__init__(request, mode)
@@ -89,8 +90,21 @@ class InitiationGenerator(Generator):
         self.llm_client = LLMClient(chat_endpoint_id)
         self.request = request
         self.mode = mode
+        self.phase_finder = PhaseFinder(request)
 
     async def _get_actual_generator(self) -> Generator:
+        dict_content = self.phase_finder.get_dict_from_message()
+        script_options = dict_content.get("script_options", {})
+        if script_options.get("mode") == "uploaded" and dict_content.get("script", "").strip():
+            return ScriptGenerator(self.request, self.mode)
+
+        if self.mode == Mode.CONFIRMATION and dict_content:
+            next_phase = self.phase_finder.get_next_phase()
+            if next_phase == Phase.STORY_BOARD and dict_content.get("script", "").strip():
+                return StoryBoardGenerator(self.request, self.mode)
+            if next_phase == Phase.ROLE_DESCRIPTION and dict_content.get("storyboards", "").strip():
+                return RoleDescriptionGenerator(self.request, self.mode)
+
         messages = [
             INITIATION_SYSTEM_PROMPT,
         ]

@@ -24,12 +24,13 @@ interface Props {
   retryPhase: string;
   finishPhase: string;
   onRetry: (phase: string) => void;
+  extra?: ReactNode;
 }
 
 const runOrder = Object.values(VideoGeneratorTaskPhase);
 
 const FlowItemTitle = (props: Props) => {
-  const { content, onRetry, disabled, retryPhase, finishPhase } = props;
+  const { content, onRetry, disabled, retryPhase, finishPhase, extra } = props;
 
   const handleRetry = () => {
     onRetry(retryPhase);
@@ -48,6 +49,7 @@ const FlowItemTitle = (props: Props) => {
           </div>
         </Popover>
       )}
+      {extra}
     </div>
   );
 };

@@ -27,7 +27,7 @@ import { BotMessageContext } from '../../../../store/BotMessage/context';
 import styles from './index.module.less';
 import ColorfulButton from '../../../ColorfulButton';
 import { RenderedMessagesContext } from '../../../../store/RenderedMessages/context';
-import { VideoGeneratorTaskPhase } from '../../../../types';
+import { RunningPhaseStatus, VideoGeneratorTaskPhase } from '../../../../types';
 import { MessageBranchChecker } from '../../../Conversation/components/MessageBranchChecker';
 
 interface AssistantMessageProps extends Message {
@@ -40,8 +40,8 @@ const AssistantMessage = (message: AssistantMessageProps) => {
   const [isContentFilter, setIsContentFilter] = useState(false);
   // 通过topMessage的finish 来判断是否可以操作
   const topMessage = useContext(BotMessageContext);
-  const { assistantInfo, retryMessage } = useContext(ChatWindowContext);
-  const { sendNextMessage, updateAutoNext } = useContext(RenderedMessagesContext);
+  const { assistantInfo, retryMessage, sending } = useContext(ChatWindowContext);
+  const { proceedNextPhase, runningPhaseStatus, updateAutoNext } = useContext(RenderedMessagesContext);
   const assistantData = assistantInfo as Assistant & { Extra?: any };
   const findModelInfo = assistantData?.Extra?.Models?.find((item: any) => {
     if (Array.isArray(item.Used)) {
@@ -54,13 +54,15 @@ const AssistantMessage = (message: AssistantMessageProps) => {
     modelName: findModelInfo?.ModelName || '',
     imgSrc: findModelInfo?.Icon || '',
   };
+  const nextDisabled = sending || runningPhaseStatus === RunningPhaseStatus.Pending;
 
   const handleNext = async () => {
+    if (nextDisabled) {
+      return;
+    }
     updateAutoNext(false);
-    if (topMessage.phase === VideoGeneratorTaskPhase.PhaseScript) {
-      sendNextMessage('生成分镜脚本', false);
-    } else {
-      sendNextMessage('开始生成视频', false);
+    if (topMessage.phase) {
+      proceedNextPhase(topMessage.phase);
     }
   };
 
@@ -111,7 +113,12 @@ const AssistantMessage = (message: AssistantMessageProps) => {
         </div>
       </div>
       {topMessage.finish && topMessage.isLastMessage && topMessage.phase ? (
-        <ColorfulButton className={styles.operateButton} mode="active" onClick={handleNext}>
+        <ColorfulButton
+          className={styles.operateButton}
+          mode={nextDisabled ? 'default' : 'active'}
+          disabled={nextDisabled}
+          onClick={handleNext}
+        >
           {topMessage.phase === VideoGeneratorTaskPhase.PhaseScript ? (
             <div className={styles.operateWrapper}>
               <IconAiEdit className={styles.operateIcon} />

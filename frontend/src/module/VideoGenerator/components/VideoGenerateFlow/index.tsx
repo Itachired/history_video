@@ -14,8 +14,8 @@ import { useContext, useEffect, useRef, useState } from 'react';
 
 import { cloneDeep, isUndefined } from 'lodash';
 import clsx from 'classnames';
-import { Button, Message, Modal, Popover } from '@arco-design/web-react';
-import { IconUpload } from '@arco-design/web-react/icon';
+import { Button, Message, Modal, Popover, Radio } from '@arco-design/web-react';
+import { IconDownload, IconUpload } from '@arco-design/web-react/icon';
 
 import { ReactComponent as IconAiPlay } from '@/images/icon_ai_play.svg';
 import { ReactComponent as IconAiPlayDisabled } from '@/images/icon_ai_play_disabled.svg';
@@ -33,6 +33,7 @@ import {
   RunningPhaseStatus,
   UserConfirmationDataKey,
   VideoGeneratorTaskPhase,
+  VoiceMode,
 } from '../../types';
 import { useParseOriginData } from './useParseOriginData';
 import { FlowData } from './types';
@@ -53,40 +54,13 @@ import {
 import FlowItemTitle from '../FlowItemTitle';
 import LoadingFilm from '../LoadingFilm';
 import useFlowPhaseData from './useFlowPhaseData';
+import { uploadReferenceImage } from '../../utils/uploadReferenceImage';
+import { downloadAsset } from '../../utils/downloadAsset';
+import { StoryboardVideoAsset, syncStoryboardVideos } from '../../utils/syncStoryboardVideos';
 
 interface Props {
   messages: ComplexMessage;
 }
-
-const REFERENCE_IMAGE_UPLOAD_URL = 'http://127.0.0.1:8889/v1/assets/upload-reference-image';
-
-const readFileAsDataUrl = (file: File) =>
-  new Promise<string>((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(String(reader.result || ''));
-    reader.onerror = () => reject(reader.error);
-    reader.readAsDataURL(file);
-  });
-
-const uploadReferenceImage = async (file: File) => {
-  const data = await readFileAsDataUrl(file);
-  const response = await fetch(REFERENCE_IMAGE_UPLOAD_URL, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      file_name: file.name,
-      content_type: file.type,
-      data,
-    }),
-  });
-  if (!response.ok) {
-    const errorText = await response.text();
-    throw new Error(errorText || 'upload reference image failed');
-  }
-  return (await response.json()) as { url: string; object_key: string };
-};
 
 const FlowPhaseMap = [
   [VideoGeneratorTaskPhase.PhaseRoleDescription, VideoGeneratorTaskPhase.PhaseRoleImage],
@@ -153,6 +127,47 @@ const VideoGenerateFlow = (props: Props) => {
 
   const finalFilmPlayerRef = useRef<IVideoPlayerRef>(null);
 
+  const hasReadyLocalAsset = (item?: Record<string, any>) =>
+    Boolean(item?.local_assets?.some((asset: Record<string, any>) => asset.status === 'ready'));
+
+  const getAssetDownloadUrl = (item?: Record<string, any>, fallbackUrl = '') =>
+    item?.local_assets?.find((asset: Record<string, any>) => asset.status === 'ready')?.download_url ||
+    item?.download_url ||
+    fallbackUrl ||
+    item?.images?.[0] ||
+    item?.url;
+
+  const getProjectAssetUrl = (phase: 'role_images' | 'storyboard_images' | 'storyboard_videos', index: number) => {
+    const projectId = userConfirmData?.[UserConfirmationDataKey.ContentOptions]?.project_id;
+    const assetId = `${phase}_${String(index + 1).padStart(2, '0')}`;
+    return projectId ? `/v1/assets/projects/${projectId}/files/${assetId}` : '';
+  };
+
+  const getProjectArchiveUrl = (phase: 'role_images' | 'storyboard_images' | 'storyboard_videos' | 'film') => {
+    const projectId = userConfirmData?.[UserConfirmationDataKey.ContentOptions]?.project_id;
+    return projectId ? `/v1/assets/projects/${projectId}/archive/${phase}` : '';
+  };
+
+  const getAllAssetsArchiveUrl = () => {
+    const projectId = userConfirmData?.[UserConfirmationDataKey.ContentOptions]?.project_id;
+    return projectId ? `/v1/assets/projects/${projectId}/archive-all` : '';
+  };
+
+  const renderDownloadButton = (url?: string, tooltip = '下载素材', disabled = false) => (
+    <Popover content={tooltip}>
+      <Button
+        size="mini"
+        type="text"
+        icon={<IconDownload />}
+        disabled={disabled || !url}
+        onClick={() => downloadAsset(url)}
+      />
+    </Popover>
+  );
+
+  const renderPhaseDownloadButton = (url?: string, tooltip = '下载全部素材', disabled = false) =>
+    renderDownloadButton(url, tooltip, disabled);
+
   useEffect(() => {
     const phaseArr = [
       '',
@@ -169,6 +184,68 @@ const VideoGenerateFlow = (props: Props) => {
   }, [currentPhaseIndex]);
 
   const modelOperateDisabled = autoNext || runningPhaseStatus === RunningPhaseStatus.Pending;
+  const voiceMode = userConfirmData?.[UserConfirmationDataKey.VoiceOptions]?.mode ?? VoiceMode.Generated;
+  const isOriginalVoiceMode = voiceMode === VoiceMode.Original;
+  const hasGeneratedVideos = Boolean(userConfirmData?.[UserConfirmationDataKey.Videos]?.length);
+  const projectId = userConfirmData?.[UserConfirmationDataKey.ContentOptions]?.project_id;
+
+  const handleVoiceModeChange = (mode: VoiceMode) => {
+    updateConfirmationMessage({
+      [UserConfirmationDataKey.VoiceOptions]: {
+        mode,
+      },
+    });
+  };
+
+  const mergeStoryboardVideoAssets = (assets: StoryboardVideoAsset[]) => {
+    if (!assets.length) {
+      return false;
+    }
+    const currentVideos = userConfirmData?.[UserConfirmationDataKey.Videos] ?? [];
+    const nextVideos = cloneDeep(currentVideos);
+    let changed = false;
+
+    assets.forEach(asset => {
+      const taskId = asset.video_gen_task_id || asset.metadata?.video_gen_task_id;
+      if (!taskId) {
+        return;
+      }
+      const videoIndex = nextVideos.findIndex(item => item.index === asset.index);
+      const nextVideo = {
+        ...(videoIndex === -1 ? { index: asset.index } : nextVideos[videoIndex]),
+        video_gen_task_id: taskId,
+        local_assets: [asset],
+        download_url: asset.download_url,
+        archive_url: projectId ? `/v1/assets/projects/${projectId}/archive/storyboard_videos` : undefined,
+      };
+
+      if (videoIndex === -1) {
+        nextVideos.push(nextVideo);
+        changed = true;
+        return;
+      }
+
+      const prevVideo = nextVideos[videoIndex];
+      const prevAsset = prevVideo?.local_assets?.[0];
+      if (
+        prevVideo.video_gen_task_id !== nextVideo.video_gen_task_id ||
+        prevAsset?.status !== asset.status ||
+        prevAsset?.filename !== asset.filename ||
+        prevAsset?.message !== asset.message ||
+        prevVideo.download_url !== nextVideo.download_url
+      ) {
+        nextVideos[videoIndex] = nextVideo;
+        changed = true;
+      }
+    });
+
+    if (changed) {
+      updateConfirmationMessage({
+        [UserConfirmationDataKey.Videos]: nextVideos.sort((a, b) => (a.index ?? 0) - (b.index ?? 0)),
+      });
+    }
+    return changed;
+  };
 
   const markFirstFrameDescriptionRegenerate = (role: string) => {
     const updateState = generateStoryBoardImageData.reduce((pre, cur, index) => {
@@ -389,6 +466,12 @@ const VideoGenerateFlow = (props: Props) => {
           onRetry={retryFromPhase}
           retryPhase={VideoGeneratorTaskPhase.PhaseRoleDescription}
           finishPhase={finishPhase}
+          extra={renderPhaseDownloadButton(
+            userConfirmData?.[UserConfirmationDataKey.RoleImage]?.[0]?.archive_url ||
+              getProjectArchiveUrl('role_images'),
+            '下载全部角色图',
+            !userConfirmData?.[UserConfirmationDataKey.RoleImage]?.some(item => hasReadyLocalAsset(item)),
+          )}
         />
       ),
       phase: FlowPhase.GenerateRole,
@@ -402,11 +485,12 @@ const VideoGenerateFlow = (props: Props) => {
                   id={FlowPhase.GenerateRole}
                   list={generateRolePhaseData.map((item, index) => {
                     const imageIndex = roleImages?.findIndex(item => item.index === index);
+                    const roleImageItem = !isUndefined(imageIndex) ? roleImages?.[imageIndex] : undefined;
 
                     return (
                       <MediaCard
                         key={`${FlowPhase.GenerateRole}${index}`}
-                        src={(!isUndefined(imageIndex) && roleImages?.[imageIndex]?.images?.[0]) || ''}
+                        src={roleImageItem?.images?.[0] || ''}
                         prompt={item.description}
                         header={
                           <MediaCardHeader
@@ -438,6 +522,11 @@ const VideoGenerateFlow = (props: Props) => {
                                     }}
                                   />
                                 </Popover>
+                                {renderDownloadButton(
+                                  getAssetDownloadUrl(roleImageItem, getProjectAssetUrl('role_images', index)),
+                                  '下载角色图',
+                                  !getAssetDownloadUrl(roleImageItem, getProjectAssetUrl('role_images', index)),
+                                )}
                               </>
                             }
                           />
@@ -506,6 +595,12 @@ const VideoGenerateFlow = (props: Props) => {
           onRetry={retryFromPhase}
           retryPhase={VideoGeneratorTaskPhase.PhaseFirstFrameDescription}
           finishPhase={finishPhase}
+          extra={renderPhaseDownloadButton(
+            userConfirmData?.[UserConfirmationDataKey.FirstFrameImages]?.[0]?.archive_url ||
+              getProjectArchiveUrl('storyboard_images'),
+            '下载全部分镜画面',
+            !userConfirmData?.[UserConfirmationDataKey.FirstFrameImages]?.some(item => hasReadyLocalAsset(item)),
+          )}
         />
       ),
       phase: FlowPhase.GenerateStoryBoardImage,
@@ -518,6 +613,8 @@ const VideoGenerateFlow = (props: Props) => {
                   id={FlowPhase.GenerateStoryBoardImage}
                   list={generateStoryBoardImageData.map((item, index) => {
                     const firstFrameImageIndex = firstFrameImages?.findIndex(item => item.index === index);
+                    const firstFrameImageItem =
+                      !isUndefined(firstFrameImageIndex) ? firstFrameImages?.[firstFrameImageIndex] : undefined;
 
                     return (
                       <MediaCard
@@ -551,6 +648,14 @@ const VideoGenerateFlow = (props: Props) => {
                                 [UserConfirmationDataKey.FirstFrameImages]: cloneArr,
                               });
                             }}
+                            extra={renderDownloadButton(
+                              getAssetDownloadUrl(firstFrameImageItem, getProjectAssetUrl('storyboard_images', index)),
+                              '下载分镜画面',
+                              !getAssetDownloadUrl(
+                                firstFrameImageItem,
+                                getProjectAssetUrl('storyboard_images', index),
+                              ),
+                            )}
                           />
                         }
                         type="image"
@@ -649,6 +754,14 @@ const VideoGenerateFlow = (props: Props) => {
           onRetry={retryFromPhase}
           retryPhase={VideoGeneratorTaskPhase.PhaseVideoDescription}
           finishPhase={finishPhase}
+          extra={renderPhaseDownloadButton(
+            userConfirmData?.[UserConfirmationDataKey.Videos]?.[0]?.archive_url ||
+              getProjectArchiveUrl('storyboard_videos'),
+            '下载全部分镜视频',
+            !userConfirmData?.[UserConfirmationDataKey.Videos]?.some(item =>
+              item?.local_assets?.some((asset: Record<string, any>) => asset.status === 'ready'),
+            ),
+          )}
         />
       ),
       phase: FlowPhase.GenerateStoryBoardVideo,
@@ -663,6 +776,7 @@ const VideoGenerateFlow = (props: Props) => {
                   id={FlowPhase.GenerateStoryBoardVideo}
                   list={generateStoryBoardVideoData.map((item, index) => {
                     const videoIndex = videos?.findIndex(item => item.index === index);
+                    const videoItem = !isUndefined(videoIndex) ? videos?.[videoIndex] : undefined;
                     const firstImageIndex = firstFrameImages?.findIndex(item => item.index === index);
 
                     if (!isUndefined(firstImageIndex) && firstFrameImages?.[firstImageIndex]?.images?.[0]) {
@@ -678,7 +792,8 @@ const VideoGenerateFlow = (props: Props) => {
                     return (
                       <MediaCard
                         key={`${FlowPhase.GenerateStoryBoardVideo}${index}`}
-                        src={(!isUndefined(videoIndex) && videos?.[videoIndex]?.video_gen_task_id) || ''}
+                        src={videoItem?.video_gen_task_id || ''}
+                        videoUrl={getAssetDownloadUrl(videoItem)}
                         prompt={item.description}
                         disabled={modelOperateDisabled}
                         header={
@@ -702,11 +817,46 @@ const VideoGenerateFlow = (props: Props) => {
                                 [UserConfirmationDataKey.Videos]: cloneArr,
                               });
                             }}
+                            extra={renderDownloadButton(
+                              getAssetDownloadUrl(videoItem),
+                              '下载视频片段',
+                              !getAssetDownloadUrl(videoItem),
+                            )}
                           />
                         }
                         type="video"
                         modelInfo={item.modelDisplayInfo}
-                        afterLoad={() => {
+                        videoProjectId={projectId}
+                        videoIndex={index}
+                        onVideoTaskUpdate={task => {
+                          if (!task?.local_asset || isUndefined(videoIndex) || !videos) {
+                            return;
+                          }
+                          const currentVideo = videos[videoIndex];
+                          const currentAsset = currentVideo?.local_assets?.[0];
+                          const nextAsset = task.local_asset;
+                          if (
+                            currentAsset?.status === nextAsset.status &&
+                            currentAsset?.filename === nextAsset.filename &&
+                            currentAsset?.message === nextAsset.message
+                          ) {
+                            return;
+                          }
+                          const cloneArr = cloneDeep(videos);
+                          cloneArr[videoIndex] = {
+                            ...cloneArr[videoIndex],
+                            local_assets: [nextAsset],
+                            download_url: nextAsset.download_url || cloneArr[videoIndex].download_url,
+                            video_url: task.content?.video_url || cloneArr[videoIndex].video_url,
+                          };
+                          updateConfirmationMessage({
+                            [UserConfirmationDataKey.Videos]: cloneArr,
+                          });
+                        }}
+                        afterTerminal={success => {
+                          if (!success) {
+                            setVideoRegenerateState(val => val | (1 << index));
+                          }
                           setVideoStatus(status => {
                             if ((status | (1 << index)) === (1 << generateStoryBoardVideoData.length) - 1 && runningPhase === VideoGeneratorTaskPhase.PhaseVideo) {
                               // 阶段转终态
@@ -806,143 +956,162 @@ const VideoGenerateFlow = (props: Props) => {
       id: FlowPhase.GenerateStoryBoardAudio,
       title: (
         <FlowItemTitle
-          content={'4.生成分镜配音'}
+          content={'4.配音设置'}
           disabled={finishPhase === VideoGeneratorTaskPhase.PhaseFilm || modelOperateDisabled}
           onRetry={retryFromPhase}
-          retryPhase={VideoGeneratorTaskPhase.PhaseTone}
+          retryPhase={isOriginalVoiceMode ? VideoGeneratorTaskPhase.PhaseVideo : VideoGeneratorTaskPhase.PhaseTone}
           finishPhase={finishPhase}
         />
       ),
       phase: FlowPhase.GenerateStoryBoardAudio,
       content:
-        generateStoryBoardAudioData.length > 0
+        hasGeneratedVideos || generateStoryBoardAudioData.length > 0
           ? active => {
               const audios = userConfirmData?.[UserConfirmationDataKey.Audios];
               const firstFrameImages = userConfirmData?.[UserConfirmationDataKey.FirstFrameImages];
 
               return (
-                <CardScrollList
-                  id={FlowPhase.GenerateStoryBoardAudio}
-                  list={generateStoryBoardAudioData.map((item, index) => {
-                    const audioIndex = audios?.findIndex(item => item.index === index);
-                    const firstImageIndex = firstFrameImages?.findIndex(item => item.index === index);
+                <div className={styles.voiceSettingsWrapper}>
+                  <div className={styles.voiceModePanel}>
+                    <Radio.Group
+                      type="button"
+                      value={voiceMode}
+                      disabled={finishPhase === VideoGeneratorTaskPhase.PhaseFilm || modelOperateDisabled}
+                      onChange={handleVoiceModeChange}
+                    >
+                      <Radio value={VoiceMode.Generated}>生成 AI 配音</Radio>
+                      <Radio value={VoiceMode.Original}>使用原音频</Radio>
+                    </Radio.Group>
+                  </div>
+                  {isOriginalVoiceMode ? (
+                    <div className={styles.originalAudioStatus}>使用原音频</div>
+                  ) : generateStoryBoardAudioData.length > 0 ? (
+                    <CardScrollList
+                      id={FlowPhase.GenerateStoryBoardAudio}
+                      list={generateStoryBoardAudioData.map((item, index) => {
+                        const audioIndex = audios?.findIndex(item => item.index === index);
+                        const firstImageIndex = firstFrameImages?.findIndex(item => item.index === index);
 
-                    if (!isUndefined(firstImageIndex) && firstFrameImages?.[firstImageIndex]?.images?.[0]) {
-                      if (!(index in audioBackgroundImages)) {
-                        updateAudioBackgroundImages(val => ({
-                          ...val,
-                          [index]: [firstFrameImages?.[firstImageIndex]?.images?.[0]],
-                        }));
-                        audioBackgroundImages[index] = [firstFrameImages?.[firstImageIndex]?.images?.[0]];
-                      }
-                    }
+                        if (!isUndefined(firstImageIndex) && firstFrameImages?.[firstImageIndex]?.images?.[0]) {
+                          if (!(index in audioBackgroundImages)) {
+                            updateAudioBackgroundImages(val => ({
+                              ...val,
+                              [index]: [firstFrameImages?.[firstImageIndex]?.images?.[0]],
+                            }));
+                            audioBackgroundImages[index] = [firstFrameImages?.[firstImageIndex]?.images?.[0]];
+                          }
+                        }
 
-                    return (
-                      <MediaCard
-                        key={`${FlowPhase.GenerateStoryBoardAudio}${index}`}
-                        src={(!isUndefined(audioIndex) && audios?.[audioIndex]?.url) || ''}
-                        prompt={item.description}
-                        disabled={modelOperateDisabled}
-                        tone={item.tone}
-                        regenerateWarning={Boolean(audioRegenerateState & (1 << index))}
-                        header={
-                          <MediaCardHeader
-                            title={`
-                              分镜配音 ${index + 1}
-                            `}
-                            imgArr={audioBackgroundImages?.[index]}
-                            currentIndex={generateStoryBoardAudioData?.[index]?.mediaUrls?.findIndex(
-                              item => item === (!isUndefined(audioIndex) && audios?.[audioIndex]?.url) || '',
-                            )}
-                            onSelect={val => {
-                              if (isUndefined(audioIndex) || !audios) {
+                        return (
+                          <MediaCard
+                            key={`${FlowPhase.GenerateStoryBoardAudio}${index}`}
+                            src={(!isUndefined(audioIndex) && audios?.[audioIndex]?.url) || ''}
+                            prompt={item.description}
+                            disabled={modelOperateDisabled}
+                            tone={item.tone}
+                            regenerateWarning={Boolean(audioRegenerateState & (1 << index))}
+                            header={
+                              <MediaCardHeader
+                                title={`
+                                  分镜配音 ${index + 1}
+                                `}
+                                imgArr={audioBackgroundImages?.[index]}
+                                currentIndex={generateStoryBoardAudioData?.[index]?.mediaUrls?.findIndex(
+                                  item => item === (!isUndefined(audioIndex) && audios?.[audioIndex]?.url) || '',
+                                )}
+                                onSelect={val => {
+                                  if (isUndefined(audioIndex) || !audios) {
+                                    return;
+                                  }
+                                  const cloneArr = cloneDeep(audios);
+                                  cloneArr[audioIndex].url = generateStoryBoardAudioData?.[index]?.mediaUrls?.[val];
+                                  // 发送重新生成消息
+                                  updateConfirmationMessage({
+                                    [UserConfirmationDataKey.Audios]: cloneArr,
+                                  });
+                                }}
+                              />
+                            }
+                            audioImg={generateStoryBoardImageData[index]?.mediaUrls?.[0]}
+                            type="audio"
+                            modelInfo={item.modelDisplayInfo}
+                            onRegenerate={() => {
+                              const audios = userConfirmData?.[UserConfirmationDataKey.Audios];
+                              if (!audios) {
+                                return;
+                              }
+                              const audioIndex = audios.findIndex(item => item.index === index);
+                              if (audioIndex === -1) {
                                 return;
                               }
                               const cloneArr = cloneDeep(audios);
-                              cloneArr[audioIndex].url = generateStoryBoardAudioData?.[index]?.mediaUrls?.[val];
+                              cloneArr[audioIndex].url = '';
                               // 发送重新生成消息
-                              updateConfirmationMessage({
+                              regenerateMessageByPhase(VideoGeneratorTaskPhase.PhaseAudio, {
                                 [UserConfirmationDataKey.Audios]: cloneArr,
                               });
+                              updateAudioBackgroundImages(val => {
+                                const cloneArr = cloneDeep(val);
+                                cloneArr[index].push(
+                                  isUndefined(firstImageIndex) ? '' : firstFrameImages?.[firstImageIndex]?.images?.[0],
+                                );
+                                return cloneArr;
+                              });
+                              setAudioRegenerateState(status => status & ~(1 << index));
+                            }}
+                            onEdit={(val, tone) => {
+                              const tones = userConfirmData?.[UserConfirmationDataKey.Tones];
+                              if (!tones) {
+                                return;
+                              }
+                              const toneIndex = tones?.findIndex(item => item.index === index);
+                              if (toneIndex === -1) {
+                                return;
+                              }
+                              const cloneArr = cloneDeep(tones);
+                              cloneArr[toneIndex].line = val;
+                              if (tone) {
+                                cloneArr[toneIndex].tone = tone;
+                              }
+                              correctDescription(
+                                VideoGeneratorTaskPhase.PhaseTone,
+                                JSON.stringify({ [UserConfirmationDataKey.Tones]: cloneArr }),
+                              );
+                              updateConfirmationMessage({
+                                [UserConfirmationDataKey.Tones]: cloneArr,
+                              });
+                              setAudioRegenerateState(val => val | (1 << index));
+                            }}
+                            promptLoading={runningPhaseStatus === RunningPhaseStatus.Pending}
+                            onPromptGenerate={() => {
+                              const tones = userConfirmData?.[UserConfirmationDataKey.Tones];
+                              if (!tones) {
+                                return;
+                              }
+                              const toneIndex = tones?.findIndex(item => item.index === index);
+                              if (toneIndex === -1) {
+                                return;
+                              }
+                              const cloneArr = cloneDeep(tones);
+                              cloneArr[toneIndex].line = '';
+                              // 发送重新生成消息
+                              sendRegenerationDescription(
+                                VideoGeneratorTaskPhase.PhaseTone,
+                                {
+                                  [UserConfirmationDataKey.Tones]: cloneArr,
+                                },
+                                String(tones[toneIndex].key),
+                              );
                             }}
                           />
-                        }
-                        audioImg={generateStoryBoardImageData[index]?.mediaUrls?.[0]}
-                        type="audio"
-                        modelInfo={item.modelDisplayInfo}
-                        onRegenerate={() => {
-                          const audios = userConfirmData?.[UserConfirmationDataKey.Audios];
-                          if (!audios) {
-                            return;
-                          }
-                          const audioIndex = audios.findIndex(item => item.index === index);
-                          if (audioIndex === -1) {
-                            return;
-                          }
-                          const cloneArr = cloneDeep(audios);
-                          cloneArr[audioIndex].url = '';
-                          // 发送重新生成消息
-                          regenerateMessageByPhase(VideoGeneratorTaskPhase.PhaseAudio, {
-                            [UserConfirmationDataKey.Audios]: cloneArr,
-                          });
-                          updateAudioBackgroundImages(val => {
-                            const cloneArr = cloneDeep(val);
-                            cloneArr[index].push(
-                              isUndefined(firstImageIndex) ? '' : firstFrameImages?.[firstImageIndex]?.images?.[0],
-                            );
-                            return cloneArr;
-                          });
-                          setAudioRegenerateState(status => status & ~(1 << index));
-                        }}
-                        onEdit={(val, tone) => {
-                          const tones = userConfirmData?.[UserConfirmationDataKey.Tones];
-                          if (!tones) {
-                            return;
-                          }
-                          const toneIndex = tones?.findIndex(item => item.index === index);
-                          if (toneIndex === -1) {
-                            return;
-                          }
-                          const cloneArr = cloneDeep(tones);
-                          cloneArr[toneIndex].line = val;
-                          if (tone) {
-                            cloneArr[toneIndex].tone = tone;
-                          }
-                          correctDescription(
-                            VideoGeneratorTaskPhase.PhaseTone,
-                            JSON.stringify({ [UserConfirmationDataKey.Tones]: cloneArr }),
-                          );
-                          updateConfirmationMessage({
-                            [UserConfirmationDataKey.Tones]: cloneArr,
-                          });
-                          setAudioRegenerateState(val => val | (1 << index));
-                        }}
-                        promptLoading={runningPhaseStatus === RunningPhaseStatus.Pending}
-                        onPromptGenerate={() => {
-                          const tones = userConfirmData?.[UserConfirmationDataKey.Tones];
-                          if (!tones) {
-                            return;
-                          }
-                          const toneIndex = tones?.findIndex(item => item.index === index);
-                          if (toneIndex === -1) {
-                            return;
-                          }
-                          const cloneArr = cloneDeep(tones);
-                          cloneArr[toneIndex].line = '';
-                          // 发送重新生成消息
-                          sendRegenerationDescription(
-                            VideoGeneratorTaskPhase.PhaseTone,
-                            {
-                              [UserConfirmationDataKey.Tones]: cloneArr,
-                            },
-                            String(tones[toneIndex].key),
-                          );
-                        }}
-                      />
-                    );
-                  })}
-                  isActive={active}
-                />
+                        );
+                      })}
+                      isActive={active}
+                    />
+                  ) : (
+                    <div className={styles.originalAudioStatus}>AI 配音待生成</div>
+                  )}
+                </div>
               );
             }
           : undefined,
@@ -981,27 +1150,41 @@ const VideoGenerateFlow = (props: Props) => {
                 <VideoPlayer ref={finalFilmPlayerRef} videoLink={userConfirmData?.film?.url || ''} />
               </div>
             </div>
-            <ColorfulButton
-              mode="active"
-              style={{ width: 225 }}
-              onClick={() => {
-                finalFilmPlayerRef.current?.pause();
-                startChatWithVideo({
-                  videoUrl: userConfirmData?.film?.url || '',
-                  // userConfirmData?.videos?.at(-1)||'',
-                  confirmation: JSON.stringify({
-                    [UserConfirmationDataKey.Script]: userConfirmData?.script,
-                    [UserConfirmationDataKey.StoryBoards]: userConfirmData?.storyboards,
-                    [UserConfirmationDataKey.RoleDescriptions]: userConfirmData?.role_descriptions,
-                  }),
-                });
-              }}
-            >
-              <div className={styles.operateWrapper}>
-                <IconAiChat className={styles.operateIcon} />
-                {'边看边聊'}
-              </div>
-            </ColorfulButton>
+            <div className={styles.resultActions}>
+              <Button
+                icon={<IconDownload />}
+                onClick={() => downloadAsset(userConfirmData?.film?.download_url || userConfirmData?.film?.url)}
+              >
+                下载成片
+              </Button>
+              <Button
+                icon={<IconDownload />}
+                onClick={() => downloadAsset(userConfirmData?.film?.all_assets_archive_url || getAllAssetsArchiveUrl())}
+              >
+                下载全部素材
+              </Button>
+              <ColorfulButton
+                mode="active"
+                style={{ width: 180 }}
+                onClick={() => {
+                  finalFilmPlayerRef.current?.pause();
+                  startChatWithVideo({
+                    videoUrl: userConfirmData?.film?.url || '',
+                    // userConfirmData?.videos?.at(-1)||'',
+                    confirmation: JSON.stringify({
+                      [UserConfirmationDataKey.Script]: userConfirmData?.script,
+                      [UserConfirmationDataKey.StoryBoards]: userConfirmData?.storyboards,
+                      [UserConfirmationDataKey.RoleDescriptions]: userConfirmData?.role_descriptions,
+                    }),
+                  });
+                }}
+              >
+                <div className={styles.operateWrapper}>
+                  <IconAiChat className={styles.operateIcon} />
+                  {'边看边聊'}
+                </div>
+              </ColorfulButton>
+            </div>
           </div>
         );
       },
@@ -1023,6 +1206,75 @@ const VideoGenerateFlow = (props: Props) => {
       setCurrentPhaseIndex(6);
     }
   }, [runningPhaseStatus]);
+
+  useEffect(() => {
+    if (!projectId || generateStoryBoardVideoData.length === 0) {
+      return undefined;
+    }
+
+    let stopped = false;
+    const syncOnce = async () => {
+      try {
+        const result = await syncStoryboardVideos(projectId);
+        if (stopped) {
+          return;
+        }
+        mergeStoryboardVideoAssets(result.assets || []);
+      } catch {
+        // Keep the card-level polling and the next project-level tick alive.
+      }
+    };
+
+    syncOnce();
+    const timer = window.setInterval(syncOnce, 3000);
+    return () => {
+      stopped = true;
+      window.clearInterval(timer);
+    };
+  }, [
+    projectId,
+    generateStoryBoardVideoData.length,
+    userConfirmData?.[UserConfirmationDataKey.Videos]?.map(item => {
+      const asset = item.local_assets?.[0];
+      return `${item.index}:${item.video_gen_task_id || ''}:${asset?.status || ''}:${asset?.filename || ''}`;
+    }).join('|'),
+  ]);
+
+  useEffect(() => {
+    if (generateStoryBoardVideoData.length === 0) {
+      return;
+    }
+    const videos = userConfirmData?.[UserConfirmationDataKey.Videos] || [];
+    const readyStatus = videos.reduce((status, item) => {
+      if (typeof item?.index !== 'number' || !hasReadyLocalAsset(item)) {
+        return status;
+      }
+      return status | (1 << item.index);
+    }, 0);
+
+    if (readyStatus) {
+      setVideoStatus(status => status | readyStatus);
+      if (
+        runningPhase === VideoGeneratorTaskPhase.PhaseVideo &&
+        runningPhaseStatus === RunningPhaseStatus.Pending &&
+        (readyStatus & ((1 << generateStoryBoardVideoData.length) - 1)) ===
+          (1 << generateStoryBoardVideoData.length) - 1
+      ) {
+        updateRunningPhaseStatus(RunningPhaseStatus.Success);
+        updateAutoNext(false);
+      }
+    }
+  }, [
+    generateStoryBoardVideoData.length,
+    runningPhase,
+    runningPhaseStatus,
+    updateAutoNext,
+    updateRunningPhaseStatus,
+    userConfirmData?.[UserConfirmationDataKey.Videos]?.map(item => {
+      const asset = item.local_assets?.[0];
+      return `${item.index}:${asset?.status || ''}:${asset?.filename || ''}`;
+    }).join('|'),
+  ]);
 
   return (
     <>

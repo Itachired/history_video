@@ -11,7 +11,6 @@
 
 import asyncio
 import json
-import os
 import time
 from typing import AsyncIterable, List, Optional
 
@@ -25,19 +24,25 @@ from app.clients.t2i import T2IClient, T2IException
 from app.constants import MAX_STORY_BOARD_NUMBER, API_KEY, T2V_ENDPOINT_ID
 from app.generators.base import Generator
 from app.generators.phase import PhaseFinder, Phase
+from app.generators.phases.knowledge_style import (
+    build_aspect_ratio_prompt,
+    build_background_reference_rule_prompt,
+    build_knowledge_style_prompt,
+    build_role_reference_rule_prompt,
+    build_user_reference_images_rule_prompt,
+    get_background_reference_url,
+    get_image_size_for_aspect_ratio,
+    get_role_reference_url,
+    get_user_reference_image_urls,
+)
+from app.generators.phases.image_generation_limiter import run_limited_image_generation
 from app.logger import ERROR, INFO
 from app.message_utils import extract_dict_from_message
 from app.mode import Mode
 from app.models.role_description import RoleDescription
 from app.models.role_image import RoleImage
 from app.output_parsers import parse_role_description
-
-
-def _get_image_generation_concurrency() -> int:
-    try:
-        return max(1, int(os.getenv("IMAGE_GENERATION_CONCURRENCY", "3")))
-    except ValueError:
-        return 3
+from app.services.asset_storage import AssetStorageService, get_project_id_from_content_options
 
 
 def _get_tool_resp(index: int, content: Optional[str] = None) -> ArkChatCompletionChunk:
@@ -73,7 +78,6 @@ class RoleImageGenerator(Generator):
     request: ArkChatRequest
     phase_finder: PhaseFinder
     mode: Mode
-    image_generation_semaphore: asyncio.Semaphore
 
     def __init__(self, request: ArkChatRequest, mode: Mode.NORMAL):
         super().__init__(request, mode)
@@ -85,7 +89,6 @@ class RoleImageGenerator(Generator):
         self.phase_finder = PhaseFinder(request)
         self.request = request
         self.mode = mode
-        self.image_generation_semaphore = asyncio.Semaphore(_get_image_generation_concurrency())
 
     async def generate(self) -> AsyncIterable[ArkChatResponse]:
         role_description_completion = self.phase_finder.get_role_descriptions()
@@ -129,46 +132,126 @@ class RoleImageGenerator(Generator):
 
         tasks = []
         generated_role_image_indexes = set([ri.index for ri in generated_role_images])
+        content_options = self.phase_finder.get_content_options()
+        project_id = get_project_id_from_content_options(content_options)
+        archive_url = f"/v1/assets/projects/{project_id}/archive/role_images"
+        role_reference_images = get_user_reference_image_urls(content_options)
+        role_reference_image = get_role_reference_url(content_options)
+        background_reference_image = get_background_reference_url(content_options)
         for index, rd in enumerate(role_descriptions):
             if index not in generated_role_image_indexes:
-                tasks.append(asyncio.create_task(self._generate_image(index, role_descriptions)))
+                INFO(
+                    f"role image index={index}, "
+                    f"background_reference_strength={self.phase_finder.get_background_reference_strength()}, "
+                    f"background_reference_used={bool(background_reference_image)}, "
+                    f"role_reference_used={bool(role_reference_image)}, "
+                    f"reference_images_count={len(role_reference_images)}"
+                )
+                tasks.append(asyncio.create_task(
+                    self._generate_image(index, role_descriptions, content_options, role_reference_images)
+                ))
 
         pending = set(tasks)
         content = {
-            "role_images": [role_image.model_dump() for role_image in generated_role_images],
+            "role_images": [
+                {**role_image.model_dump(), "archive_url": role_image.archive_url or archive_url}
+                for role_image in generated_role_images
+            ],
         }
 
-        while pending:
-            done, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
+        try:
+            while pending:
+                done, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
 
-            for task in done:
-                role_image_index, role_images = task.result()
-                content["role_images"].append(RoleImage(
-                    index=role_image_index,
-                    images=role_images,
-                    reference_image=role_images[0] if role_images else None,
-                    locked=True,
-                ).model_dump())
+                for task in done:
+                    role_image_index, role_images, local_assets = task.result()
+                    content["role_images"].append(RoleImage(
+                        index=role_image_index,
+                        images=role_images,
+                        reference_image=role_images[0] if role_images else None,
+                        local_assets=local_assets,
+                        archive_url=archive_url,
+                        locked=True,
+                    ).model_dump())
+        except asyncio.CancelledError:
+            INFO(f"role image generation canceled, cancel pending tasks count={len(pending)}")
+            for task in pending:
+                task.cancel()
+            await asyncio.gather(*pending, return_exceptions=True)
+            raise
 
         yield _get_tool_resp(0, json.dumps(content))
         yield _get_tool_resp(1)
 
-    async def _generate_image(self, index: int, role_descriptions: List[RoleDescription]):
+    async def _generate_image(
+            self,
+            index: int,
+            role_descriptions: List[RoleDescription],
+            content_options: dict,
+            reference_images: List[str],
+    ):
         started_at = time.perf_counter()
+        local_assets = []
         try:
-            prompt = f"{role_descriptions[index].description}卡通风格插图，3D渲染。"
-            async with self.image_generation_semaphore:
-                images = await asyncio.to_thread(
-                    self.t2i_client.image_generation,
-                    prompt=prompt,
-                    model=T2V_ENDPOINT_ID,
+            if self.phase_finder.get_content_mode() == "history_knowledge":
+                prompt = (
+                    f"{build_knowledge_style_prompt(content_options)}\n"
+                    f"{build_aspect_ratio_prompt(content_options)}\n"
+                    f"{build_user_reference_images_rule_prompt(content_options, 'role')}\n"
+                    f"{build_background_reference_rule_prompt(content_options, 'role')}\n"
+                    f"{build_role_reference_rule_prompt(content_options)}\n"
+                    f"视觉主体描述：{role_descriptions[index].description}\n"
+                    "生成历史/知识类短视频使用的视觉主体图。"
+                    "人物或主体应严格匹配参考图提供的人物质感、时代氛围、色调、光照、材质和镜头质感。"
+                    "主体形象应半写实、克制、清晰，禁止Q版、大头小身、玩具质感、儿童绘本风。"
                 )
-            INFO(f"role image index={index} finished in {time.perf_counter() - started_at:.2f}s")
+            else:
+                prompt = (
+                    f"{build_aspect_ratio_prompt(content_options)}\n"
+                    f"{role_descriptions[index].description}卡通风格插图，3D渲染。"
+                )
+            image_size = get_image_size_for_aspect_ratio(content_options)
+            images = await run_limited_image_generation(
+                self.t2i_client.image_generation,
+                prompt=prompt,
+                model=T2V_ENDPOINT_ID,
+                reference_images=reference_images,
+                size=image_size,
+            )
+            INFO(
+                f"role image index={index} finished in {time.perf_counter() - started_at:.2f}s, "
+                f"background_reference_strength={self.phase_finder.get_background_reference_strength()}, "
+                f"background_reference_used={bool(reference_images)}, "
+                f"reference_images_count={len(reference_images)}, "
+                f"image_size={image_size}"
+            )
+            try:
+                storage = AssetStorageService(get_project_id_from_content_options(content_options))
+                local_assets = [
+                    storage.store_url_asset(
+                        "role_images",
+                        index,
+                        image_url,
+                        f"role_{index + 1:02d}",
+                        "png",
+                        metadata={"role_description": role_descriptions[index].description},
+                    )
+                    for image_url in images
+                ]
+                local_assets = [asset for asset in local_assets if asset]
+            except Exception as e:
+                ERROR(f"failed to archive role image, index: {index}, error: {e}")
         except T2IException as e:
-            ERROR(f"failed to generate image, index: {index}, code: {e.code}, message: {e}, elapsed: {time.perf_counter() - started_at:.2f}s")
-            return index, [e.message]
+            ERROR(
+                f"failed to generate image, index: {index}, code: {e.code}, message: {e}, "
+                f"reference_images_count: {len(reference_images)}, elapsed: {time.perf_counter() - started_at:.2f}s"
+            )
+            return index, [e.message], []
         except Exception as e:
-            ERROR(f"failed to generate image, index: {index}, error: {e}, elapsed: {time.perf_counter() - started_at:.2f}s")
-            return index, ["failed to generate image"]
+            ERROR(
+                f"failed to generate image, index: {index}, error: {e}, "
+                f"reference_images_count: {len(reference_images)}, elapsed: {time.perf_counter() - started_at:.2f}s"
+            )
+            return index, ["failed to generate image"], []
 
-        return index, images
+        return index, images, local_assets

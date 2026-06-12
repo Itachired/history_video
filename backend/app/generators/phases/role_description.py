@@ -18,6 +18,7 @@ from app.constants import LLM_ENDPOINT_ID
 from app.generators.base import Generator
 from app.generators.phase import Phase, PhaseFinder
 from app.generators.phases.common import get_correction_completion_chunk
+from app.generators.phases.knowledge_style import build_knowledge_style_prompt
 from app.mode import Mode
 
 ROLE_DESCRIPTION_SYSTEM_PROMPT = ArkMessage(
@@ -53,6 +54,46 @@ phase=RoleDescription
 """
 )
 
+HISTORY_KNOWLEDGE_ROLE_DESCRIPTION_SYSTEM_PROMPT = ArkMessage(
+    role="system",
+    content="""# 角色
+你是历史/知识类短视频角色与视觉主体设定师。你的任务是根据 Script 和 StoryBoard，生成后续画面生成可使用的视觉主体描述。
+
+# 要求
+- 整体风格为历史知识类动画插画，3D 渲染，克制、清晰、适合短视频讲解。
+- 视觉主体设定应服务于知识讲解，避免低龄儿童故事化表达。
+- 可以将历史人物、群体、地点、制度、文献、建筑、地图、旁白等作为视觉主体。
+- 只为贯穿多段分镜、需要保持一致外观的核心人物或视觉主体生成独立角色；一次性出现的次要人物、群体、地点、文献、建筑、地图，优先写入分镜画面，不要拆成独立角色。
+- 每个主体描述需简洁明了，不超过40个字，包含身份、外观、服饰或典型视觉元素。
+- 对战争、暴力、处决、死亡等内容只做概括表达，不描述血腥细节。
+- 角色数量：1-4。除非用户明确要求，否则不要超过4个角色或视觉主体。
+- [重要] 如果用户提示词内容没问题，在正常返回结果前加上"phase=RoleDescription"的前缀。
+
+# 输出按照以下格式回答：
+phase=RoleDescription
+角色1：
+角色：旁白
+角色描述：中性旁白形象，简洁现代服装。服饰：深色上衣（知识讲解场景）
+角色2：
+角色：历史人物
+角色描述：历史人物形象，时代服饰，神情克制。服饰：符合时代背景的外套（历史场景）
+角色3：
+角色：核心群体
+角色描述：代表性群体形象，姿态克制。服饰：符合时代背景的群体服装（历史场景）
+"""
+)
+
+
+def _select_role_description_prompt(phase_finder: PhaseFinder) -> ArkMessage:
+    content_mode = phase_finder.get_content_mode()
+    if content_mode == "history_knowledge":
+        return ArkMessage(
+            role="system",
+            content=f"{HISTORY_KNOWLEDGE_ROLE_DESCRIPTION_SYSTEM_PROMPT.content}\n\n"
+                    f"{build_knowledge_style_prompt(phase_finder.get_content_options())}"
+        )
+    return ROLE_DESCRIPTION_SYSTEM_PROMPT
+
 
 class RoleDescriptionGenerator(Generator):
     llm_client: LLMClient
@@ -79,7 +120,7 @@ class RoleDescriptionGenerator(Generator):
             _, script_message = self.phase_finder.get_phase_message(Phase.SCRIPT)
             _, storyboard_message = self.phase_finder.get_phase_message(Phase.STORY_BOARD)
             messages = [
-                ROLE_DESCRIPTION_SYSTEM_PROMPT,
+                _select_role_description_prompt(self.phase_finder),
                 script_message,
                 storyboard_message,
                 self.request.messages[-1],

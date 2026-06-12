@@ -45,7 +45,13 @@ class T2IClient:
     def __init__(self, t2i_api_key: str) -> None:
         self.t2i_client = Ark(api_key=t2i_api_key, region="cn-beijing")
 
-    def image_generation(self, prompt: str, model: str, reference_images: Optional[List[str]] = None) -> List[str]:
+    def image_generation(
+            self,
+            prompt: str,
+            model: str,
+            reference_images: Optional[List[str]] = None,
+            size: Optional[str] = None,
+    ) -> List[str]:
         """
         API Docs: https://www.volcengine.com/docs/82379/1541523
         """
@@ -58,6 +64,7 @@ class T2IClient:
         images = self.t2i_client.images.generate(
             model=model,
             prompt=prompt,
+            size=size,
             extra_body=extra_body,
         )
         return [item.url for item in images.data]

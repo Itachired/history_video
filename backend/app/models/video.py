@@ -9,7 +9,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Optional
+from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel
 
@@ -18,3 +18,7 @@ class Video(BaseModel):
     index: int
     video_gen_task_id: str
     video_data: Optional[bytes] = None
+    video_url: Optional[str] = None
+    local_assets: Optional[List[Dict[str, Any]]] = None
+    download_url: Optional[str] = None
+    archive_url: Optional[str] = None

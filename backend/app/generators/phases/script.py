@@ -9,16 +9,22 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import time
 from typing import AsyncIterable
 
-from arkitect.core.component.llm.model import ArkChatRequest, ArkChatResponse, ArkMessage
+from arkitect.core.component.llm.model import ArkChatRequest, ArkChatResponse, ArkMessage, ArkChatCompletionChunk
+from arkitect.core.errors import InvalidParameter
+from arkitect.utils.context import get_reqid, get_resource_id
+from volcenginesdkarkruntime.types.chat.chat_completion_chunk import Choice, ChoiceDelta
 
 from app.clients.llm import LLMClient
 from app.constants import LLM_ENDPOINT_ID
 from app.generators.base import Generator
-from app.generators.phase import Phase
+from app.generators.phase import Phase, PhaseFinder
 from app.generators.phases.common import get_correction_completion_chunk
 from app.mode import Mode
+
+UPLOADED_SCRIPT_MAX_LENGTH = 12000
 
 SCRIPT_SYSTEM_PROMPT = ArkMessage(
     role="system",
@@ -72,6 +78,7 @@ class ScriptGenerator(Generator):
     llm_client: LLMClient
     request: ArkChatRequest
     mode: Mode
+    phase_finder: PhaseFinder
 
     def __init__(self, request: ArkChatRequest, mode: Mode.NORMAL):
         super().__init__(request, mode)
@@ -83,8 +90,35 @@ class ScriptGenerator(Generator):
         self.llm_client = LLMClient(chat_endpoint_id)
         self.request = request
         self.mode = mode
+        self.phase_finder = PhaseFinder(request)
 
     async def generate(self) -> AsyncIterable[ArkChatResponse]:
+        dict_content = self.phase_finder.get_dict_from_message()
+        script_options = dict_content.get("script_options", {})
+        uploaded_script = dict_content.get("script", "")
+        if script_options.get("mode") == "uploaded":
+            uploaded_script = uploaded_script.strip()
+            if not uploaded_script:
+                raise InvalidParameter("messages", "script is empty")
+            if len(uploaded_script) > UPLOADED_SCRIPT_MAX_LENGTH:
+                raise InvalidParameter("messages", "script is too long")
+            yield ArkChatCompletionChunk(
+                id=get_reqid(),
+                choices=[
+                    Choice(
+                        index=0,
+                        finish_reason="stop",
+                        delta=ChoiceDelta(
+                            content=f"phase={Phase.SCRIPT.value}\n\n{uploaded_script}",
+                        ),
+                    ),
+                ],
+                created=int(time.time()),
+                model=get_resource_id(),
+                object="chat.completion.chunk"
+            )
+            return
+
         if self.mode == Mode.CORRECTION:
             yield get_correction_completion_chunk(self.request.messages[-1], Phase.SCRIPT)
         else:

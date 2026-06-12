@@ -1,0 +1,36 @@
+<svg width="320" height="180" viewBox="0 0 320 180" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <rect width="320" height="180" rx="14" fill="#D6D1C3"/>
+  <rect x="0" y="0" width="320" height="180" rx="14" fill="url(#grain)" opacity="0.25"/>
+  <path d="M0 132C42 117 70 120 112 132C158 145 189 121 228 113C262 106 292 116 320 103V180H0V132Z" fill="#AAA391"/>
+  <path d="M28 125H292V139H28V125Z" fill="#7F7768"/>
+  <path d="M53 73H96V125H53V73Z" fill="#918979"/>
+  <path d="M59 64H90L99 73H50L59 64Z" fill="#7A7162"/>
+  <path d="M118 49H202V125H118V49Z" fill="#827B6E"/>
+  <path d="M130 36H190L206 49H113L130 36Z" fill="#6F675B"/>
+  <path d="M223 78H269V125H223V78Z" fill="#8B8374"/>
+  <path d="M230 68H261L272 78H219L230 68Z" fill="#746C5F"/>
+  <g opacity="0.72">
+    <rect x="132" y="63" width="13" height="22" rx="2" fill="#C8C0AB"/>
+    <rect x="154" y="63" width="13" height="22" rx="2" fill="#C8C0AB"/>
+    <rect x="176" y="63" width="13" height="22" rx="2" fill="#C8C0AB"/>
+    <rect x="132" y="94" width="13" height="31" rx="2" fill="#C8C0AB"/>
+    <rect x="154" y="94" width="13" height="31" rx="2" fill="#C8C0AB"/>
+    <rect x="176" y="94" width="13" height="31" rx="2" fill="#C8C0AB"/>
+  </g>
+  <path d="M36 42C78 30 105 36 145 47C181 57 218 52 280 32" stroke="#6C8791" stroke-width="3" stroke-linecap="round" opacity="0.55"/>
+  <path d="M43 51C87 39 113 45 154 56C190 66 226 60 286 42" stroke="#F2E7C9" stroke-width="2" stroke-linecap="round" opacity="0.55"/>
+  <circle cx="246" cy="42" r="19" fill="#E1D4B5" opacity="0.55"/>
+  <g opacity="0.68">
+    <path d="M36 151C48 140 60 140 72 151" stroke="#4F4A42" stroke-width="4" stroke-linecap="round"/>
+    <circle cx="54" cy="132" r="8" fill="#4F4A42"/>
+    <path d="M243 152C255 141 267 141 279 152" stroke="#4F4A42" stroke-width="4" stroke-linecap="round"/>
+    <circle cx="261" cy="133" r="8" fill="#4F4A42"/>
+  </g>
+  <defs>
+    <pattern id="grain" width="16" height="16" patternUnits="userSpaceOnUse">
+      <circle cx="2" cy="3" r="1" fill="#5B534A"/>
+      <circle cx="11" cy="8" r="0.8" fill="#F5EBD5"/>
+      <circle cx="6" cy="14" r="0.7" fill="#5B534A"/>
+    </pattern>
+  </defs>
+</svg>

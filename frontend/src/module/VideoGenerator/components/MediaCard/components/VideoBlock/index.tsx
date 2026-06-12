@@ -9,7 +9,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 import cx from 'classnames';
 import { Progress } from '@arco-design/web-react';
@@ -29,42 +29,86 @@ const VideoBlock = ({
   setVideoLink,
   videoLink,
   afterLoad,
+  afterTerminal,
+  onTaskUpdate,
+  projectId,
+  taskIndex,
   audioImg,
 }: {
   id: string;
   setVideoLink: (value: string) => void;
   videoLink?: string;
   afterLoad?: () => void;
+  afterTerminal?: (success: boolean) => void;
+  onTaskUpdate?: (task: ResultType) => void;
+  projectId?: string;
+  taskIndex?: number;
   audioImg?: string;
 }) => {
   const [video, setVideo] = useState<ResultType>();
   const { run } = useRefetchRunningTask(setVideo);
+  const terminalNotifiedRef = useRef(false);
+  const callbacksRef = useRef({
+    afterLoad,
+    afterTerminal,
+    onTaskUpdate,
+    setVideoLink,
+  });
 
   useEffect(() => {
-    if (id && id !== ErrorString.VideoError) {
-      run(id);
-    }
+    callbacksRef.current = {
+      afterLoad,
+      afterTerminal,
+      onTaskUpdate,
+      setVideoLink,
+    };
+  }, [afterLoad, afterTerminal, onTaskUpdate, setVideoLink]);
+
+  useEffect(() => {
+    terminalNotifiedRef.current = false;
     setVideo(undefined);
-    setVideoLink('');
-  }, [id, run]);
+    callbacksRef.current.setVideoLink('');
+    if (id && id !== ErrorString.VideoError) {
+      run(id, { ProjectId: projectId, Index: taskIndex });
+    }
+  }, [id, projectId, run, taskIndex]);
 
   usePageVisibility(() => {
     if (id && id !== ErrorString.VideoError) {
-      run(id);
+      run(id, { ProjectId: projectId, Index: taskIndex });
     }
   });
 
   useEffect(() => {
-    if (video?.status !== Phase.PhaseCompleted) {
+    if (video) {
+      callbacksRef.current.onTaskUpdate?.(video);
+    }
+
+    if (!id || terminalNotifiedRef.current) {
       return;
     }
-    (async () => {
-      setVideoLink(video.content?.video_url || '');
+
+    if (id === ErrorString.VideoError) {
+      terminalNotifiedRef.current = true;
+      callbacksRef.current.afterTerminal?.(false);
+      return;
+    }
+
+    if (video?.status === Phase.PhaseCompleted) {
+      callbacksRef.current.setVideoLink(video.content?.video_url || '');
       if (video.content?.video_url) {
-        afterLoad?.();
+        terminalNotifiedRef.current = true;
+        callbacksRef.current.afterLoad?.();
+        callbacksRef.current.afterTerminal?.(true);
       }
-    })();
-  }, [afterLoad, setVideoLink, video]);
+      return;
+    }
+
+    if (video?.status === Phase.PhaseFailed || video?.Error) {
+      terminalNotifiedRef.current = true;
+      callbacksRef.current.afterTerminal?.(false);
+    }
+  }, [id, video]);
 
   // 固定阶段返回值映射
   const fixedPercentages: Record<string, number> = {
@@ -86,7 +130,7 @@ const VideoBlock = ({
   };
 
   const renderVideo = () => {
-    if (id === ErrorString.VideoError) {
+    if (id === ErrorString.VideoError || video?.status === Phase.PhaseFailed || video?.Error) {
       return (
         <div className={styles.failed}>
           <img src={iconVideoFailed} style={{ width: 76, height: 76 }} />
@@ -147,6 +191,7 @@ const VideoBlock = ({
                   className={styles.videoProgress}
                   formatText={percent => <div className={styles.progressText}>{`${percent}%`}</div>}
                 />
+                <div className={cx(styles.loadingText, styles.loadingTextSpc)}>{'等待提交生成任务'}</div>
               </div>
             )}
           </div>

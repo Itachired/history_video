@@ -142,20 +142,27 @@ class PhaseFinder:
         if current_phase_index < 0:
             current_phase_index = 0
 
+        dict_content = self.get_dict_from_message()
+        voice_options = dict_content.get("voice_options", {})
+        if (
+            voice_options.get("mode") == "original"
+            and PHASE_ORDER[current_phase_index] in (Phase.TONE, Phase.AUDIO)
+        ):
+            return Phase.FILM
+
         return PHASE_ORDER[current_phase_index]
 
-    def get_dict_from_message(self) -> Dict[str, Any]:
-        last_user_message = self.messages[-1]
-        if last_user_message.role != "user":
+    def _get_dict_from_user_message(self, message: ArkMessage) -> Dict[str, Any]:
+        if message.role != "user":
             return {}
 
-        if type(last_user_message.content) is str:
-            if last_user_message.content.startswith(Mode.CONFIRMATION.value) or \
-                    last_user_message.content.startswith(Mode.REGENERATION.value):
-                return extract_dict_from_message(last_user_message.content)
+        if type(message.content) is str:
+            if message.content.startswith(Mode.CONFIRMATION.value) or \
+                    message.content.startswith(Mode.REGENERATION.value):
+                return extract_dict_from_message(message.content)
 
-        elif type(last_user_message.content) is list:
-            for c in last_user_message.content:
+        elif type(message.content) is list:
+            for c in message.content:
                 if c.type == "text":
                     try:
                         d = extract_dict_from_message(c.text)
@@ -165,10 +172,55 @@ class PhaseFinder:
 
         return {}
 
+    def get_dict_from_message(self) -> Dict[str, Any]:
+        if not self.messages:
+            return {}
+
+        return self._get_dict_from_user_message(self.messages[-1])
+
     def get_script(self) -> str:
         dict_content = self.get_dict_from_message()
         storyboards_text = dict_content.get("script", "")
         return storyboards_text
+
+    def get_content_options(self) -> Dict[str, Any]:
+        for message in reversed(self.messages):
+            dict_content = self._get_dict_from_user_message(message)
+            content_options = dict_content.get("content_options", {})
+            if content_options:
+                return content_options
+
+        return {}
+
+    def get_content_mode(self) -> str:
+        return self.get_content_options().get("mode", "story")
+
+    def get_knowledge_style(self) -> str:
+        return self.get_content_options().get("style", "documentary")
+
+    def get_knowledge_style_prompt(self) -> str:
+        style_prompt = self.get_content_options().get("style_prompt", "")
+        if isinstance(style_prompt, str):
+            return style_prompt[:500]
+        return ""
+
+    def get_background_reference(self) -> Dict[str, Any]:
+        background_reference = self.get_content_options().get("background_reference", {})
+        if isinstance(background_reference, dict):
+            return background_reference
+        return {}
+
+    def get_background_reference_scope(self) -> str:
+        scope = self.get_content_options().get("background_reference_scope", "role_and_scene")
+        if scope in ("scene_only", "role_and_scene"):
+            return scope
+        return "role_and_scene"
+
+    def get_background_reference_strength(self) -> str:
+        strength = self.get_content_options().get("background_reference_strength", "strict")
+        if strength in ("normal", "strong", "strict"):
+            return strength
+        return "strict"
 
     def get_storyboards(self) -> Tuple[str, List[StoryBoard]]:
         dict_content = self.get_dict_from_message()

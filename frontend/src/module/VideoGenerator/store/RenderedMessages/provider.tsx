@@ -30,6 +30,7 @@ import {
   VideoGeneratorMessageType,
   VideoGeneratorTaskPhase,
   VideoGeneratorUserMessage,
+  VoiceMode,
 } from '../../types';
 import { useIndexedDB } from '../../hooks/useIndexedDB';
 import {
@@ -57,6 +58,24 @@ const internalAutoNextPhaseMap: Partial<Record<VideoGeneratorTaskPhase, VideoGen
 };
 
 const getItemIndex = (item: Record<string, any>) => Number(item?.index);
+const getVoiceMode = (data?: UserConfirmationData) =>
+  data?.[UserConfirmationDataKey.VoiceOptions]?.mode ?? VoiceMode.Generated;
+const shouldReplaceRenderedAssistant = (
+  lastRenderedMessage: RenderedMessages[number] | undefined,
+  nextMessage: VideoGeneratorBotMessage,
+) => {
+  if (!lastRenderedMessage || lastRenderedMessage.role !== 'assistant') {
+    return false;
+  }
+  if (lastRenderedMessage.type === VideoGeneratorMessageType.Multiple) {
+    return false;
+  }
+  const lastAssistantMessage = lastRenderedMessage as VideoGeneratorBotMessage;
+  return (
+    lastAssistantMessage.type === VideoGeneratorMessageType.Loading ||
+    lastAssistantMessage.phase === nextMessage.phase
+  );
+};
 
 const RenderedMessagesProvider = (props: PropsWithChildren<Props>) => {
   const { children, storeUniqueId } = props;
@@ -75,6 +94,7 @@ const RenderedMessagesProvider = (props: PropsWithChildren<Props>) => {
     useGenerateStatus();
 
   const complexMessagesRef = useRef<Record<string, VideoGeneratorBotMessage[]>>({});
+  const messagesRef = useRef(messages);
   const userConfirmMessageRef = useRef<UserConfirmationData>();
   const regenerationDescriptionRef = useRef<{ descriptionsData: UserConfirmationData; uniqueKey: string }>();
   const timerRef = useRef<number>();
@@ -99,16 +119,27 @@ const RenderedMessagesProvider = (props: PropsWithChildren<Props>) => {
     return phaseStack[phaseStack.length - 1];
   }, [phaseStack]);
 
+  useEffect(() => {
+    messagesRef.current = messages;
+  }, [messages]);
+
   const updateAutoNext = (val: boolean) => {
     autoNextRef.current = val;
     setAutoNext(val);
   };
 
-  const sendNextMessage = (content?: string, isHidden = true) => {
-    if (messages.length) {
-      const lastMessage = messages[messages.length - 1];
+  const sendNextMessage = (content?: string, isHidden = true, retryCount = 0) => {
+    const latestMessages = messagesRef.current;
+    if (latestMessages.length) {
+      const lastMessage = latestMessages[latestMessages.length - 1];
       if (lastMessage.role === 'assistant' && !lastMessage.finish) {
-        updateRunningPhaseStatus(RunningPhaseStatus.Pending);
+        if (retryCount < 20) {
+          window.setTimeout(() => {
+            sendNextMessage(content, isHidden, retryCount + 1);
+          }, 300);
+          return;
+        }
+        updateRunningPhaseStatus(RunningPhaseStatus.Ready);
         return;
       }
     }
@@ -330,54 +361,92 @@ const RenderedMessagesProvider = (props: PropsWithChildren<Props>) => {
   };
 
   const getConfirmationDataByPhase = (phase: string) => {
+    const contentOptions = userConfirmMessageRef.current?.[UserConfirmationDataKey.ContentOptions];
+    const withContentOptions = (data: UserConfirmationData) => ({
+      ...data,
+      ...(contentOptions ? { [UserConfirmationDataKey.ContentOptions]: contentOptions } : {}),
+    });
+
     switch (phase) {
+      case VideoGeneratorTaskPhase.PhaseStoryBoard: {
+        return withContentOptions(pick(userConfirmMessageRef.current, [UserConfirmationDataKey.Script]));
+      }
+      case VideoGeneratorTaskPhase.PhaseRoleDescription: {
+        return withContentOptions(
+          pick(userConfirmMessageRef.current, [
+            UserConfirmationDataKey.Script,
+            UserConfirmationDataKey.StoryBoards,
+          ]),
+        );
+      }
       case VideoGeneratorTaskPhase.PhaseRoleImage: {
-        return pick(userConfirmMessageRef.current, [UserConfirmationDataKey.RoleDescriptions]);
+        return withContentOptions(pick(userConfirmMessageRef.current, [UserConfirmationDataKey.RoleDescriptions]));
       }
       case VideoGeneratorTaskPhase.PhaseFirstFrameDescription: {
-        return pick(userConfirmMessageRef.current, [
-          UserConfirmationDataKey.Script,
-          UserConfirmationDataKey.StoryBoards,
-          UserConfirmationDataKey.RoleDescriptions,
-        ]);
+        return withContentOptions(
+          pick(userConfirmMessageRef.current, [
+            UserConfirmationDataKey.Script,
+            UserConfirmationDataKey.StoryBoards,
+            UserConfirmationDataKey.RoleDescriptions,
+          ]),
+        );
       }
       case VideoGeneratorTaskPhase.PhaseFirstFrameImage: {
-        return pick(userConfirmMessageRef.current, [
-          UserConfirmationDataKey.RoleDescriptions,
-          UserConfirmationDataKey.RoleImage,
-          UserConfirmationDataKey.FirstFrameDescriptions,
-        ]);
+        return withContentOptions(
+          pick(userConfirmMessageRef.current, [
+            UserConfirmationDataKey.RoleDescriptions,
+            UserConfirmationDataKey.RoleImage,
+            UserConfirmationDataKey.FirstFrameDescriptions,
+          ]),
+        );
       }
       case VideoGeneratorTaskPhase.PhaseVideoDescription: {
-        return pick(userConfirmMessageRef.current, [
-          UserConfirmationDataKey.Script,
-          UserConfirmationDataKey.StoryBoards,
-          UserConfirmationDataKey.RoleDescriptions,
-          UserConfirmationDataKey.FirstFrameDescriptions,
-        ]);
+        return withContentOptions(
+          pick(userConfirmMessageRef.current, [
+            UserConfirmationDataKey.Script,
+            UserConfirmationDataKey.StoryBoards,
+            UserConfirmationDataKey.RoleDescriptions,
+            UserConfirmationDataKey.FirstFrameDescriptions,
+          ]),
+        );
       }
       case VideoGeneratorTaskPhase.PhaseVideo: {
-        return pick(userConfirmMessageRef.current, [
-          UserConfirmationDataKey.VideoDescriptions,
-          UserConfirmationDataKey.FirstFrameImages,
-        ]);
+        return withContentOptions(
+          pick(userConfirmMessageRef.current, [
+            UserConfirmationDataKey.VideoDescriptions,
+            UserConfirmationDataKey.FirstFrameImages,
+          ]),
+        );
       }
       case VideoGeneratorTaskPhase.PhaseTone: {
-        return pick(userConfirmMessageRef.current, [UserConfirmationDataKey.StoryBoards]);
+        return withContentOptions(pick(userConfirmMessageRef.current, [UserConfirmationDataKey.StoryBoards]));
       }
       case VideoGeneratorTaskPhase.PhaseAudio: {
-        return pick(userConfirmMessageRef.current, [UserConfirmationDataKey.Tones]);
+        return withContentOptions(pick(userConfirmMessageRef.current, [UserConfirmationDataKey.Tones]));
       }
       case VideoGeneratorTaskPhase.PhaseFilm: {
         const videos = userConfirmMessageRef.current?.[UserConfirmationDataKey.Videos] ?? [];
         const tones = userConfirmMessageRef.current?.[UserConfirmationDataKey.Tones] ?? [];
         const audios = userConfirmMessageRef.current?.[UserConfirmationDataKey.Audios] ?? [];
+        const voiceOptions = userConfirmMessageRef.current?.[UserConfirmationDataKey.VoiceOptions] ?? {
+          mode: VoiceMode.Generated,
+        };
+        if (voiceOptions.mode === VoiceMode.Original) {
+          return {
+            [UserConfirmationDataKey.Videos]: videos,
+            [UserConfirmationDataKey.VoiceOptions]: voiceOptions,
+            ...(contentOptions ? { [UserConfirmationDataKey.ContentOptions]: contentOptions } : {}),
+          };
+        }
+
         const videoIndexSet = new Set(videos.map(getItemIndex));
 
         return {
           [UserConfirmationDataKey.Tones]: tones.filter(item => videoIndexSet.has(getItemIndex(item))),
           [UserConfirmationDataKey.Videos]: videos,
           [UserConfirmationDataKey.Audios]: audios.filter(item => videoIndexSet.has(getItemIndex(item))),
+          [UserConfirmationDataKey.VoiceOptions]: voiceOptions,
+          ...(contentOptions ? { [UserConfirmationDataKey.ContentOptions]: contentOptions } : {}),
         };
       }
       default: {
@@ -436,6 +505,15 @@ const RenderedMessagesProvider = (props: PropsWithChildren<Props>) => {
 
   const proceedNextPhase = (currentPhase: string) => {
     if (runningPhaseStatusRef.current === RunningPhaseStatus.Pending) {
+      return;
+    }
+    if (
+      [VideoGeneratorTaskPhase.PhaseVideo, VideoGeneratorTaskPhase.PhaseTone].includes(
+        currentPhase as VideoGeneratorTaskPhase,
+      ) &&
+      getVoiceMode(userConfirmMessageRef.current) === VoiceMode.Original
+    ) {
+      sendUserMessageByPhase(VideoGeneratorTaskPhase.PhaseFilm);
       return;
     }
     const index = runOrder.findIndex(item => item === currentPhase);
@@ -676,16 +754,12 @@ const RenderedMessagesProvider = (props: PropsWithChildren<Props>) => {
         }
 
         // 简单消息
-        if (
-          prevRenderedMessages.length === 0 ||
-          prevRenderedMessages[prevRenderedMessages.length - 1].role !== newMessage.role
-        ) {
-          // 新的消息
-          return [...prevRenderedMessages, newMessage as VideoGeneratorBotMessage];
+        const lastRenderedMessage = prevRenderedMessages[prevRenderedMessages.length - 1];
+        if (shouldReplaceRenderedAssistant(lastRenderedMessage, newMessage as VideoGeneratorBotMessage)) {
+          return [...prevRenderedMessages.slice(0, -1), newMessage as VideoGeneratorBotMessage];
         }
 
-        // 更新消息
-        return [...prevRenderedMessages.slice(0, -1), newMessage as VideoGeneratorBotMessage];
+        return [...prevRenderedMessages, newMessage as VideoGeneratorBotMessage];
       };
       newRenderedMessages = updateRenderedMessages(newRenderedMessages);
       if (!message.finish) {
@@ -737,6 +811,12 @@ const RenderedMessagesProvider = (props: PropsWithChildren<Props>) => {
         userConfirmDataKeys.push(phaseStruct.userConfirmationDataKey);
       }
     });
+    if (userConfirmMessageRef.current?.[UserConfirmationDataKey.VoiceOptions]) {
+      userConfirmDataKeys.push(UserConfirmationDataKey.VoiceOptions);
+    }
+    if (userConfirmMessageRef.current?.[UserConfirmationDataKey.ContentOptions]) {
+      userConfirmDataKeys.push(UserConfirmationDataKey.ContentOptions);
+    }
     // 查找原消息
     let prevMessages = [...messages];
     const phaseBotMessageIndex = messages.findIndex(item => {
@@ -929,7 +1009,14 @@ const RenderedMessagesProvider = (props: PropsWithChildren<Props>) => {
         }
 
         const lastRenderedMessage = prevRenderedMessages[prevRenderedMessages.length - 1];
-        if (lastMessage.role === 'assistant' && lastRenderedMessage.role === 'assistant') {
+        if (
+          lastMessage.role === 'assistant' &&
+          lastRenderedMessage.role === 'assistant' &&
+          (
+            lastRenderedMessage.type === VideoGeneratorMessageType.Loading ||
+            normalMessage.type !== VideoGeneratorMessageType.Loading
+          )
+        ) {
           // 两边消息为assistant，视为重新生成的更新
           return [...prevRenderedMessages.slice(0, -1), normalMessage];
         }
@@ -993,8 +1080,12 @@ const RenderedMessagesProvider = (props: PropsWithChildren<Props>) => {
       }
 
       // 简单消息
-      // 前面已经塞进过 loading 消息，所以这里直接更新即可
-      return [...prevRenderedMessages.slice(0, -1), newMessage as VideoGeneratorBotMessage];
+      const lastRenderedMessage = prevRenderedMessages[prevRenderedMessages.length - 1];
+      if (shouldReplaceRenderedAssistant(lastRenderedMessage, newMessage as VideoGeneratorBotMessage)) {
+        return [...prevRenderedMessages.slice(0, -1), newMessage as VideoGeneratorBotMessage];
+      }
+
+      return [...prevRenderedMessages, newMessage as VideoGeneratorBotMessage];
     });
 
     if (!lastMessage.finish) {

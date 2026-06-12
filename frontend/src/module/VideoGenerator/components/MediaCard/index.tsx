@@ -9,7 +9,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-import { ReactNode, useEffect, useState } from 'react';
+import { ReactNode, useCallback, useEffect, useState } from 'react';
 
 import { ButtonProps } from '@arco-design/web-react';
 import { after } from 'lodash';
@@ -25,9 +25,12 @@ import ImageBlock from './components/ImageBlock';
 import EditModal from './components/EditModal';
 import AudioBlock from './components/AudioBlock';
 import VideoBlock from './components/VideoBlock';
+import { resolveAssetUrl } from '../../utils/downloadAsset';
+
 interface Props {
   src: string;
   type?: 'video' | 'audio' | 'image';
+  videoUrl?: string;
   tone?: string;
   audioImg?: string;
   title?: ReactNode;
@@ -43,6 +46,10 @@ interface Props {
   onEdit?: (value?: string, tone?: string) => void;
   disabled?: boolean;
   afterLoad?: () => void;
+  afterTerminal?: (success: boolean) => void;
+  onVideoTaskUpdate?: (task: Record<string, any>) => void;
+  videoProjectId?: string;
+  videoIndex?: number;
   editWarning?: boolean;
   regenerateWarning?: boolean;
 }
@@ -50,6 +57,7 @@ interface Props {
 const MediaCard = (props: Props) => {
   const {
     src,
+    videoUrl,
     audioImg,
     type,
     tone,
@@ -68,11 +76,22 @@ const MediaCard = (props: Props) => {
     regenerateWarning,
     disabled,
     afterLoad,
+    afterTerminal,
+    onVideoTaskUpdate,
+    videoProjectId,
+    videoIndex,
   } = props;
 
   const [visible, setVisible] = useState(false);
   const [videoLink, setVideoLink] = useState<string>();
   const [videoMap, setVideoMap] = useState<Record<string, string>>({});
+
+  const updateVideoLink = useCallback((value: string) => {
+    setVideoLink(current => (current === value ? current : value));
+    if (src) {
+      setVideoMap(current => (current[src] === value ? current : { ...current, [src]: value }));
+    }
+  }, [src]);
 
   usePageVisibility(() => {
     if (videoLink) {
@@ -81,12 +100,17 @@ const MediaCard = (props: Props) => {
   });
 
   useEffect(() => {
-    if (src in videoMap) {
-      setVideoLink(videoMap[src]);
+    const resolvedVideoUrl = resolveAssetUrl(videoUrl);
+    if (resolvedVideoUrl) {
+      updateVideoLink(resolvedVideoUrl);
       return;
     }
-    setVideoLink('');
-  }, [src]);
+    if (src in videoMap) {
+      updateVideoLink(videoMap[src]);
+      return;
+    }
+    updateVideoLink('');
+  }, [src, videoMap, videoUrl, updateVideoLink]);
 
   const renderHeader = () => {
     if (header === null) {
@@ -111,11 +135,12 @@ const MediaCard = (props: Props) => {
         ) : (
           <VideoBlock
             id={src}
-            setVideoLink={value => {
-              setVideoLink(value);
-              setVideoMap({ ...videoMap, [src]: value });
-            }}
+            setVideoLink={updateVideoLink}
             afterLoad={afterLoad}
+            afterTerminal={afterTerminal}
+            onTaskUpdate={onVideoTaskUpdate}
+            projectId={videoProjectId}
+            taskIndex={videoIndex}
             videoLink={videoLink}
             audioImg={audioImg}
           />

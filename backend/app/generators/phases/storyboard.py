@@ -18,6 +18,7 @@ from app.constants import LLM_ENDPOINT_ID, MAX_STORY_BOARD_NUMBER
 from app.generators.base import Generator
 from app.generators.phase import Phase, PhaseFinder
 from app.generators.phases.common import get_correction_completion_chunk
+from app.generators.phases.knowledge_style import build_knowledge_style_prompt
 from app.mode import Mode
 
 STORY_BOARD_SYSTEM_PROMPT = ArkMessage(
@@ -78,6 +79,48 @@ phase=StoryBoard
 """
 )
 
+HISTORY_KNOWLEDGE_STORY_BOARD_SYSTEM_PROMPT = ArkMessage(
+    role="system",
+    content=f"""# 角色
+你是历史/知识类短视频分镜策划。你将根据用户提供的文档或文案，提炼关键背景、人物、事件、原因和影响，生成适合短视频表达的分镜。
+
+# 任务描述与要求
+- 本模式只生成历史/知识讲解短视频分镜，面向通用受众，采用客观、中立、清晰的旁白解说。
+- 如果输入是历史事件、人物传记、社会事件或知识材料，必须转化为知识讲解分镜，禁止用“不适合”“无法转化”等拒绝话术回答。
+- 起义、镇压、武器、战争、处决、死亡、社会冲突等可以作为历史背景、原因和影响进行概括讲解，但画面不能渲染血腥、恐怖或细节化伤害。
+- 画面描述应适合动画/插画短视频表现，可以使用历史场景、地图、文献、建筑、会议、人群剪影、象征性道具等视觉元素。
+- 分镜数量不超过{MAX_STORY_BOARD_NUMBER}个。
+- 台词需要生成中文版和英文版，风格为旁白解说，准确、简洁、克制。
+- 每个分镜必须都有台词。
+- 返回结果必须增加"phase=StoryBoard"前缀。
+
+# 输出按照以下格式回答（角色、画面、中文台词、英文台词分别各占一行）：
+phase=StoryBoard
+分镜1：
+角色：旁白
+画面：用适合知识类短视频的方式描述画面。
+中文台词：“一句客观简洁的中文旁白。”
+英文台词："A concise English narration."
+
+分镜2：
+角色：旁白
+画面：用适合知识类短视频的方式描述画面。
+中文台词：“一句客观简洁的中文旁白。”
+英文台词："A concise English narration."
+"""
+)
+
+
+def _select_story_board_prompt(phase_finder: PhaseFinder) -> ArkMessage:
+    content_mode = phase_finder.get_content_mode()
+    if content_mode == "history_knowledge":
+        return ArkMessage(
+            role="system",
+            content=f"{HISTORY_KNOWLEDGE_STORY_BOARD_SYSTEM_PROMPT.content}\n\n"
+                    f"{build_knowledge_style_prompt(phase_finder.get_content_options())}"
+        )
+    return STORY_BOARD_SYSTEM_PROMPT
+
 
 class StoryBoardGenerator(Generator):
     llm_client: LLMClient
@@ -103,7 +146,7 @@ class StoryBoardGenerator(Generator):
         else:
             _, script_message = self.phase_finder.get_phase_message(Phase.SCRIPT)
             messages = [
-                STORY_BOARD_SYSTEM_PROMPT,
+                _select_story_board_prompt(self.phase_finder),
                 script_message,
                 self.request.messages[-1],
             ]
