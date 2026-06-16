@@ -1,7 +1,7 @@
 // Copyright (c) 2025 Bytedance Ltd. and/or its affiliates
 // Licensed under the 【火山方舟】原型应用软件自用许可协议
 // you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at 
+// You may obtain a copy of the License at
 //     https://www.volcengine.com/docs/82379/1433703
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -9,13 +9,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-import { FC, Fragment, useEffect, useMemo, useState } from 'react';
+import { type FC, Fragment, useEffect, useMemo, useState } from 'react';
 
 import clsx from 'classnames';
 
 import styles from './index.module.less';
 
-interface Props {
+export interface PlaceholderProps {
   /**
    * 智能体名字
    */
@@ -60,7 +60,9 @@ interface Props {
   disabled: boolean;
 }
 
-const Gap: FC<{ size: number }> = ({ size }) => <div style={{ height: size }} />;
+const Gap: FC<{ size: number }> = ({ size }) => (
+  <div style={{ height: size }} />
+);
 
 /**
  * 智能体头像组件
@@ -68,7 +70,11 @@ const Gap: FC<{ size: number }> = ({ size }) => <div style={{ height: size }} />
  * @constructor
  */
 const Avatar = ({ avatar }: { avatar: string }) => (
-  <img className="w-[72px] h-[72px] border-white border  border-solid rounded-full" src={avatar} alt="avatar" />
+  <img
+    className="w-[72px] h-[72px] border-white border  border-solid rounded-full"
+    src={avatar}
+    alt="avatar"
+  />
 );
 
 /**
@@ -77,7 +83,9 @@ const Avatar = ({ avatar }: { avatar: string }) => (
  * @constructor
  */
 const Name = ({ name }: { name: string }) => (
-  <div className="text-[color:var(--color-text-1)] text-base font-medium">{name}</div>
+  <div className="text-[color:var(--color-text-1)] text-base font-medium">
+    {name}
+  </div>
 );
 
 /**
@@ -108,10 +116,18 @@ const OpeningRemark = ({
         .map(({ avatar, name, content }, idx) => (
           <div className={clsx(idx !== 0 && 'mt-[20px]')} key={name}>
             <div className="flex items-center gap-[4px]">
-              <img src={avatar} className="rounded-full w-[22px] h-[22px]" />
-              <div className="text-[#737A87] text-[12px] max-w-[350px] overflow-hidden text-ellipsis">{name}</div>
+              <img
+                src={avatar}
+                className="rounded-full w-[22px] h-[22px]"
+                alt={name}
+              />
+              <div className="text-[#737A87] text-[12px] max-w-[350px] overflow-hidden text-ellipsis">
+                {name}
+              </div>
             </div>
-            <div className={clsx('ml-[26px]', styles.openingRemark)}>{content}</div>
+            <div className={clsx('ml-[26px]', styles.openingRemark)}>
+              {content}
+            </div>
           </div>
         ))}
     </>
@@ -131,7 +147,9 @@ const PreQuestions = ({
 }) => {
   const questionPair = useMemo(
     () =>
-      preQuestions.filter(preQ => Boolean(preQ)).map(question => [question, () => onQuestionClick(question)] as const),
+      preQuestions
+        .filter(preQ => Boolean(preQ))
+        .map(question => [question, () => onQuestionClick(question)] as const),
     [preQuestions, onQuestionClick],
   );
 
@@ -143,11 +161,21 @@ const PreQuestions = ({
   }, []);
 
   return (
-    <div className={`mt-6 flex flex-col justify-center items-center text-white text-sm  ${isAnimating ? '' : ''}`}>
+    <div
+      className={`mt-6 flex flex-col justify-center items-center text-white text-sm  ${isAnimating ? '' : ''}`}
+    >
       {questionPair.map(([question, onClick]) => (
         <Fragment key={question}>
           <div
             onClick={() => !disabled && onClick()}
+            onKeyDown={event => {
+              if (!disabled && (event.key === 'Enter' || event.key === ' ')) {
+                event.preventDefault();
+                onClick();
+              }
+            }}
+            role="button"
+            tabIndex={disabled ? -1 : 0}
             className={clsx(styles.preQItem, disabled && '!cursor-not-allowed')}
           >
             <div>{question}</div>
@@ -159,7 +187,7 @@ const PreQuestions = ({
   );
 };
 
-export const Placeholder: FC<Props> = ({
+export const Placeholder: FC<PlaceholderProps> = ({
   disabled,
   chatStarted,
   avatar,
@@ -183,7 +211,12 @@ export const Placeholder: FC<Props> = ({
         chatStarted && !openingRemark?.length && 'h-0',
       )}
     >
-      <div className={clsx(!openingRemark && 'mt-[160px]', 'self-center flex justify-center items-center flex-col')}>
+      <div
+        className={clsx(
+          !openingRemark && 'mt-[160px]',
+          'self-center flex justify-center items-center flex-col',
+        )}
+      >
         {!chatStarted && (
           <>
             <Avatar avatar={avatar} />
@@ -194,7 +227,11 @@ export const Placeholder: FC<Props> = ({
       </div>
       {!chatStarted && <OpeningRemark openingRemark={openingRemark} />}
       {!chatStarted ? (
-        <PreQuestions disabled={disabled} onQuestionClick={onQuestionClick} preQuestions={preQuestions} />
+        <PreQuestions
+          disabled={disabled}
+          onQuestionClick={onQuestionClick}
+          preQuestions={preQuestions}
+        />
       ) : null}
     </div>
   );

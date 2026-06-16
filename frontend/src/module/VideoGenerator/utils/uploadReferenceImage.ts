@@ -1,5 +1,10 @@
-const REFERENCE_IMAGE_UPLOAD_URL =
-  'http://127.0.0.1:8889/v1/assets/upload-reference-image';
+import { resolveBackendUrl } from '@/utils/desktopRuntime';
+
+interface ReferenceImageUploadPayload {
+  content_type: string;
+  data: string;
+  file_name: string;
+}
 
 const readFileAsDataUrl = (file: File) =>
   new Promise<string>((resolve, reject) => {
@@ -9,19 +14,29 @@ const readFileAsDataUrl = (file: File) =>
     reader.readAsDataURL(file);
   });
 
-export const uploadReferenceImage = async (file: File) => {
-  const data = await readFileAsDataUrl(file);
-  const response = await fetch(REFERENCE_IMAGE_UPLOAD_URL, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
+const isFile = (input: File | ReferenceImageUploadPayload): input is File =>
+  typeof File !== 'undefined' && input instanceof File;
+
+export const uploadReferenceImage = async (
+  input: File | ReferenceImageUploadPayload,
+) => {
+  const payload = isFile(input)
+    ? {
+        file_name: input.name,
+        content_type: input.type,
+        data: await readFileAsDataUrl(input),
+      }
+    : input;
+  const response = await fetch(
+    resolveBackendUrl('/v1/assets/upload-reference-image'),
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(payload),
     },
-    body: JSON.stringify({
-      file_name: file.name,
-      content_type: file.type,
-      data,
-    }),
-  });
+  );
   if (!response.ok) {
     const errorText = await response.text();
     throw new Error(errorText || 'upload reference image failed');

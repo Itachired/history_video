@@ -532,6 +532,7 @@ const VideoGenerateFlow = (props: Props) => {
                           />
                         }
                         type="image"
+                        previewable
                         modelInfo={item.modelDisplayInfo}
                         onEdit={val => {
                           const currentDescriptionData = roleDescription[index];
@@ -659,6 +660,8 @@ const VideoGenerateFlow = (props: Props) => {
                           />
                         }
                         type="image"
+                        previewable
+                        previewVariant="landscape"
                         modelInfo={item.modelDisplayInfo}
                         editWarning={Boolean(firstFrameDescriptionRegenerateState & (1 << index))}
                         regenerateWarning={Boolean(firstFrameRegenerateState & (1 << index))}

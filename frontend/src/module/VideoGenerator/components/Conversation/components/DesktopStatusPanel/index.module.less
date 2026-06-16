@@ -1,0 +1,145 @@
+.status-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  height: 32px;
+  padding: 0 10px;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  color: #374151;
+  font-size: 13px;
+  background: #fff;
+  cursor: pointer;
+}
+
+.status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #9ca3af;
+}
+
+.status-dot[data-status='ok'] {
+  background: #16a34a;
+}
+
+.status-dot[data-status='error'] {
+  background: #dc2626;
+}
+
+.panel {
+  display: grid;
+  gap: 16px;
+}
+
+.section {
+  display: grid;
+  gap: 10px;
+}
+
+.section-title {
+  color: #111827;
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 22px;
+}
+
+.info-grid {
+  display: grid;
+  grid-template-columns: 118px minmax(0, 1fr);
+  gap: 8px 12px;
+  padding: 12px;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  background: #fafbfc;
+}
+
+.info-label {
+  color: #6b7280;
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.info-value {
+  overflow: hidden;
+  color: #111827;
+  font-size: 12px;
+  line-height: 18px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.capability-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.capability-pill {
+  padding: 3px 8px;
+  border-radius: 999px;
+  color: #6b7280;
+  font-size: 12px;
+  line-height: 18px;
+  background: #f3f4f6;
+}
+
+.capability-pill[data-enabled='true'] {
+  color: #166534;
+  background: #dcfce7;
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.project-list {
+  display: grid;
+  gap: 8px;
+  max-height: 260px;
+  overflow-y: auto;
+}
+
+.project-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  background: #fff;
+}
+
+.project-title {
+  overflow: hidden;
+  color: #111827;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 20px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.project-meta {
+  margin-top: 2px;
+  color: #6b7280;
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.project-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.empty {
+  padding: 16px;
+  border: 1px dashed #d1d5db;
+  border-radius: 8px;
+  color: #6b7280;
+  font-size: 13px;
+  text-align: center;
+}

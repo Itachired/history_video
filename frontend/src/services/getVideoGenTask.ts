@@ -10,6 +10,7 @@
 // limitations under the License.
 
 import type { GetVideoGenTaskResponse } from '@/types/video_gen_task';
+import { resolveBackendUrl } from '@/utils/desktopRuntime';
 import axios, { type AxiosRequestConfig } from 'axios';
 
 export interface GetVideoGenTaskParams {
@@ -35,7 +36,9 @@ export const GetVideoGenTask: Request = async params => {
     searchParams.set('index', String(params.Index));
   }
   const query = searchParams.toString();
-  const url = `http://127.0.0.1:8889/v1/video-tasks/${params.Id}${query ? `?${query}` : ''}`;
+  const url = resolveBackendUrl(
+    `/v1/video-tasks/${params.Id}${query ? `?${query}` : ''}`,
+  );
   const axiosConfig: AxiosRequestConfig = {
     method: 'GET',
     headers: {

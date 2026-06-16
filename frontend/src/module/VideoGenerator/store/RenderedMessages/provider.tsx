@@ -933,6 +933,72 @@ const RenderedMessagesProvider = (props: PropsWithChildren<Props>) => {
     ]);
   };
 
+  const correctPhaseText = (phase: string, content: string) => {
+    const normalizedContent = content.trim();
+    if (!normalizedContent) {
+      return;
+    }
+    const phaseContent = normalizedContent.startsWith(`phase=${phase}`)
+      ? normalizedContent
+      : `phase=${phase}\n${normalizedContent}`;
+    const nextMessages = [...messagesRef.current];
+    const messageIndex = nextMessages.findLastIndex(item => {
+      if (item.role !== 'assistant') {
+        return false;
+      }
+      return item.versions[item.currentVersion].some(
+        version => version.type === EMessageType.Message && version.content.startsWith(`phase=${phase}`),
+      );
+    });
+    if (messageIndex === -1) {
+      return;
+    }
+
+    const findMessage = nextMessages[messageIndex] as BotMessage;
+    const nextVersion = findMessage.currentVersion + 1;
+    const updatedMessage: BotMessage = {
+      ...findMessage,
+      currentVersion: nextVersion,
+      versions: [
+        ...findMessage.versions,
+        [
+          {
+            id: Date.now(),
+            type: EMessageType.Message,
+            content: phaseContent,
+            finish: true,
+            logid: '',
+            finish_reason: 'stop',
+          },
+        ],
+      ],
+    };
+    nextMessages[messageIndex] = updatedMessage;
+
+    const { newMessage: parsedMessage } = parseOriginMessage(updatedMessage);
+    if (!parsedMessage) {
+      return;
+    }
+
+    setMessages(nextMessages);
+    setRenderedMessages(prevRenderedMessages => prevRenderedMessages.map(item => {
+      if (
+        item.role === 'assistant' &&
+        item.type !== VideoGeneratorMessageType.Multiple &&
+        (item as VideoGeneratorBotMessage).phase === phase
+      ) {
+        return parsedMessage as VideoGeneratorBotMessage;
+      }
+      return item;
+    }));
+
+    try {
+      if (dbInstance) {
+        dbInstance.putItem({ messages: nextMessages });
+      }
+    } catch {}
+  };
+
   // 始终是一问一答的形式，所以直接处理最后一条消息
   useEffect(() => {
     // 初始化
@@ -1161,6 +1227,7 @@ const RenderedMessagesProvider = (props: PropsWithChildren<Props>) => {
         resetMessages,
         updateRunningPhaseStatus,
         correctDescription,
+        correctPhaseText,
         retryFromPhase,
       }}
     >

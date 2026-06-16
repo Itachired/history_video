@@ -19,6 +19,34 @@
     gap: 8px;
     align-items: center;
 
+    .storyboard-english-toggle {
+      display: flex;
+      padding: 4px 6px;
+      align-items: center;
+      gap: 6px;
+      border-radius: 4px;
+      background: var(--background-color-bg-4, #f6f8fa);
+      color: var(--text-color-text-2, #42464e);
+      font-family: 'PingFang SC';
+      font-size: 13px;
+      font-style: normal;
+      font-weight: 500;
+      line-height: 22px;
+      white-space: nowrap;
+    }
+
+    .storyboard-edit-button {
+      height: 30px;
+      padding: 4px 8px;
+      border-radius: 4px;
+      color: var(--primary-color-primary-6, #1664ff);
+      font-family: 'PingFang SC';
+      font-size: 13px;
+      font-weight: 500;
+      line-height: 22px;
+      white-space: nowrap;
+    }
+
     .button {
       border-radius: var(--border-radius-small, 4px);
       border: 1px solid var(--line-color-border-2, #eaedf1);
@@ -93,3 +121,29 @@
   gap: 4px;
 }
 
+.storyboard-edit-modal {
+  :global(.arco-modal-content) {
+    padding-top: 12px;
+  }
+}
+
+.storyboard-textarea {
+  width: 100%;
+  min-height: 460px;
+  margin-top: 12px;
+  padding: 12px;
+  resize: vertical;
+  border: 1px solid var(--line-color-border-2, #eaedf1);
+  border-radius: 6px;
+  outline: none;
+  background: #f8fafc;
+  color: var(--text-color-text-1, #0c0d0e);
+  font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+  font-size: 13px;
+  line-height: 22px;
+
+  &:focus {
+    border-color: var(--primary-color-primary-6, #1664ff);
+    background: #fff;
+  }
+}

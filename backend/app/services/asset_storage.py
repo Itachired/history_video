@@ -1,5 +1,6 @@
 import json
 import mimetypes
+import os
 import re
 import shutil
 import tempfile
@@ -14,7 +15,9 @@ import requests
 from app.logger import ERROR, INFO, WARN
 
 
-ASSET_ROOT = Path(__file__).resolve().parents[3] / "assets" / "generated"
+ASSET_ROOT = Path(
+    os.getenv("ASSET_ROOT") or Path(__file__).resolve().parents[3] / "assets" / "generated"
+)
 DEFAULT_PROJECT_ID = "default"
 MAX_ASSET_DOWNLOAD_BYTES = 500 * 1024 * 1024
 

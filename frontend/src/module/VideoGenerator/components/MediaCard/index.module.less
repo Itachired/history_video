@@ -1,6 +1,7 @@
 .wrapper {
   display: flex;
   width: 302px;
+  flex: 0 0 auto;
   padding: 16px;
   flex-direction: column;
   align-items: flex-start;
@@ -17,6 +18,27 @@
   position: relative; 
   overflow: hidden; 
   border-radius: 10px;
+  background: #f4f6fa;
+}
+
+.landscape {
+  width: 480px;
+
+  .media-wrapper {
+    width: 448px;
+    height: auto;
+    aspect-ratio: 16 / 9;
+  }
+}
+
+.portrait {
+  width: 302px;
+
+  .media-wrapper {
+    width: 270px;
+    height: auto;
+    aspect-ratio: 9 / 16;
+  }
 }
 
 .image-wrapper{

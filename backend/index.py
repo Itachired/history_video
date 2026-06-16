@@ -11,13 +11,16 @@
 
 import base64
 import binascii
+import json
 import logging
 import mimetypes
 import os
+import sys
 import uuid
+from datetime import datetime, timezone
 from io import BytesIO
 from pathlib import Path
-from typing import AsyncIterable, Union
+from typing import AsyncIterable, Dict, Union
 
 from dotenv import load_dotenv
 
@@ -26,12 +29,23 @@ load_dotenv(_backend_dir.parent / ".env")
 load_dotenv(_backend_dir / ".env", override=True)
 
 from app.clients.tos import TOSClient
-from app.constants import API_KEY, ARTIFACT_TOS_BUCKET
+from app.constants import (
+    API_KEY,
+    ARTIFACT_TOS_BUCKET,
+    CGT_ENDPOINT_ID,
+    LLM_ENDPOINT_ID,
+    T2V_ENDPOINT_ID,
+    TTS_ACCESS_KEY,
+    TTS_API_RESOURCE_ID,
+    TTS_APP_KEY,
+    TTS_BASE_URL,
+    VLM_ENDPOINT_ID,
+)
 from app.generators.factory import GeneratorFactory
 from app.generators.phase import PhaseFinder, get_phase_from_message
 from app.message_utils import get_last_message
 from app.mode import Mode
-from app.services.asset_storage import AssetStorageService
+from app.services.asset_storage import ASSET_ROOT, AssetStorageService
 
 from fastapi import HTTPException, Query, Request
 from fastapi.responses import FileResponse
@@ -58,6 +72,109 @@ ALLOWED_REFERENCE_IMAGE_TYPES = {
     "image/png": "png",
     "image/webp": "webp",
 }
+
+SERVER_STARTED_AT = datetime.now(timezone.utc).isoformat()
+
+
+def _config_present(value: str) -> bool:
+    return bool(value and not value.startswith("<your-"))
+
+
+def _desktop_config_status():
+    tts_configured = all(
+        _config_present(value)
+        for value in [TTS_ACCESS_KEY, TTS_API_RESOURCE_ID, TTS_APP_KEY, TTS_BASE_URL]
+    )
+    tos_configured = all(
+        _config_present(value)
+        for value in [
+            os.getenv("TOS_ACCESSKEY", ""),
+            os.getenv("TOS_SECRETKEY", ""),
+            ARTIFACT_TOS_BUCKET,
+        ]
+    )
+    return {
+        "api_key": _config_present(API_KEY),
+        "llm_endpoint_id": _config_present(LLM_ENDPOINT_ID),
+        "t2v_endpoint_id": _config_present(T2V_ENDPOINT_ID),
+        "cgt_endpoint_id": _config_present(CGT_ENDPOINT_ID),
+        "vlm_endpoint_id": _config_present(VLM_ENDPOINT_ID),
+        "tos": tos_configured,
+        "tos_bucket": _config_present(ARTIFACT_TOS_BUCKET),
+        "tts": tts_configured,
+    }
+
+
+def _desktop_capabilities(config: Dict[str, bool]):
+    return {
+        "script": config["api_key"] and config["llm_endpoint_id"],
+        "image": config["api_key"] and config["t2v_endpoint_id"],
+        "video": config["api_key"] and config["cgt_endpoint_id"],
+        "tts": config["tts"],
+        "film": config["tos"],
+    }
+
+
+def _asset_phase_counts(manifest: Dict):
+    counts: Dict[str, Dict[str, int]] = {}
+    for asset in manifest.get("assets", []):
+        phase = asset.get("phase") or "unknown"
+        status = asset.get("status") or "unknown"
+        phase_counts = counts.setdefault(phase, {"total": 0})
+        phase_counts["total"] += 1
+        phase_counts[status] = phase_counts.get(status, 0) + 1
+    return counts
+
+
+def _load_project_summary(project_dir: Path):
+    manifest_path = project_dir / "manifest.json"
+    if not manifest_path.exists():
+        return None
+    try:
+        with manifest_path.open("r", encoding="utf-8") as f:
+            manifest = json.load(f)
+    except Exception as exc:
+        LOGGER.warning("failed to read project manifest: %s", manifest_path)
+        return {
+            "project_id": project_dir.name,
+            "manifest_path": str(manifest_path),
+            "project_dir": str(project_dir),
+            "status": "manifest_error",
+            "message": str(exc),
+            "updated_at": datetime.fromtimestamp(
+                manifest_path.stat().st_mtime,
+                timezone.utc,
+            ).isoformat(),
+            "asset_count": 0,
+            "phase_counts": {},
+        }
+
+    assets = manifest.get("assets", [])
+    ready_count = len([asset for asset in assets if asset.get("status") == "ready"])
+    storyboard_video_tasks = [
+        asset
+        for asset in assets
+        if asset.get("phase") == "storyboard_videos"
+        and (asset.get("video_gen_task_id") or asset.get("metadata", {}).get("video_gen_task_id"))
+    ]
+    film_ready = any(
+        asset.get("phase") == "film" and asset.get("status") == "ready"
+        for asset in assets
+    )
+    return {
+        "project_id": manifest.get("project_id") or project_dir.name,
+        "manifest_path": str(manifest_path),
+        "project_dir": str(project_dir),
+        "status": "ready" if assets else "empty",
+        "created_at": manifest.get("created_at"),
+        "updated_at": manifest.get("updated_at")
+        or datetime.fromtimestamp(manifest_path.stat().st_mtime, timezone.utc).isoformat(),
+        "asset_count": len(assets),
+        "ready_asset_count": ready_count,
+        "phase_counts": _asset_phase_counts(manifest),
+        "storyboard_video_task_count": len(storyboard_video_tasks),
+        "film_ready": film_ready,
+    }
 
 
 @task()
@@ -369,6 +486,39 @@ async def get_video_generation_task(
     return payload
 
 
+async def get_desktop_status(request: Request):
+    config = _desktop_config_status()
+    return {
+        "status": "ok",
+        "backend": {
+            "base_url": str(request.base_url).rstrip("/"),
+            "port": os.getenv("_FAAS_RUNTIME_PORT") or "8888",
+            "asset_root": str(ASSET_ROOT),
+            "python": sys.executable,
+            "started_at": SERVER_STARTED_AT,
+            "cwd": os.getcwd(),
+        },
+        "config": config,
+        "capabilities": _desktop_capabilities(config),
+    }
+
+
+async def list_desktop_projects(limit: int = Query(default=20, ge=1, le=100)):
+    ASSET_ROOT.mkdir(parents=True, exist_ok=True)
+    projects = []
+    for project_dir in ASSET_ROOT.iterdir():
+        if not project_dir.is_dir():
+            continue
+        summary = _load_project_summary(project_dir)
+        if summary:
+            projects.append(summary)
+    projects.sort(key=lambda item: item.get("updated_at") or "", reverse=True)
+    return {
+        "asset_root": str(ASSET_ROOT),
+        "projects": projects[:limit],
+    }
+
+
 if __name__ == "__main__":
     port = os.getenv("_FAAS_RUNTIME_PORT")
     set_resource_type(os.getenv("RESOURCE_TYPE") or "")
@@ -424,6 +574,16 @@ if __name__ == "__main__":
     server.app.add_api_route(
         "/v1/video-tasks/{task_id}",
         get_video_generation_task,
+        methods=["GET"],
+    )
+    server.app.add_api_route(
+        "/v1/desktop/status",
+        get_desktop_status,
+        methods=["GET"],
+    )
+    server.app.add_api_route(
+        "/v1/desktop/projects",
+        list_desktop_projects,
         methods=["GET"],
     )
     server.run(app=server.app, port=int(port) if port else 8888)

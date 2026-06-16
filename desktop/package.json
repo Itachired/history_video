@@ -1,0 +1,48 @@
+{
+  "name": "chat2cartoon-desktop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Electron shell for the history knowledge video generator.",
+  "main": "src/main/index.cjs",
+  "scripts": {
+    "dev": "electron .",
+    "start": "electron .",
+    "pack": "electron-builder --dir",
+    "dist": "electron-builder"
+  },
+  "build": {
+    "appId": "com.local.chat2cartoon",
+    "productName": "历史知识视频生成器",
+    "files": [
+      "src/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "../frontend/dist",
+        "to": "frontend-dist",
+        "filter": [
+          "**/*"
+        ]
+      },
+      {
+        "from": "../backend",
+        "to": "backend",
+        "filter": [
+          "**/*",
+          "!__pycache__/**",
+          "!**/*.pyc",
+          "!logs/**",
+          "!trace_*.log"
+        ]
+      }
+    ],
+    "mac": {
+      "category": "public.app-category.video"
+    }
+  },
+  "devDependencies": {
+    "electron": "^31.7.7",
+    "electron-builder": "^24.13.3"
+  }
+}

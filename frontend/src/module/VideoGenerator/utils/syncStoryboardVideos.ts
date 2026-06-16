@@ -1,4 +1,4 @@
-const BACKEND_ORIGIN = 'http://127.0.0.1:8889';
+import { resolveBackendUrl } from '@/utils/desktopRuntime';
 
 export interface StoryboardVideoAsset {
   asset_id: string;
@@ -22,7 +22,9 @@ export const syncStoryboardVideos = async (
   projectId: string,
 ): Promise<SyncStoryboardVideosResponse> => {
   const response = await fetch(
-    `${BACKEND_ORIGIN}/v1/assets/projects/${projectId}/storyboard-videos/sync`,
+    resolveBackendUrl(
+      `/v1/assets/projects/${projectId}/storyboard-videos/sync`,
+    ),
     {
       method: 'POST',
       headers: {

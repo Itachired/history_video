@@ -1,7 +1,7 @@
 // Copyright (c) 2025 Bytedance Ltd. and/or its affiliates
 // Licensed under the 【火山方舟】原型应用软件自用许可协议
 // you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at 
+// You may obtain a copy of the License at
 //     https://www.volcengine.com/docs/82379/1433703
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -12,38 +12,46 @@
 import { useContext, useMemo, useRef, useState } from 'react';
 
 import { Button, Message, Modal, Radio } from '@arco-design/web-react';
-import { IconDelete, IconFile, IconImage, IconUpload } from '@arco-design/web-react/icon';
+import {
+  IconDelete,
+  IconFile,
+  IconFolder,
+  IconImage,
+  IconUpload,
+} from '@arco-design/web-react/icon';
 
-import { IconClean } from '@/images/iconBox';
 import { ChatWindowContext } from '@/components/ChatWindowV2/context';
+import classroomPreview from '@/images/assets/knowledge-style-classroom.svg';
+import documentaryPreview from '@/images/assets/knowledge-style-documentary.svg';
+import infographicPreview from '@/images/assets/knowledge-style-infographic.svg';
+import museumPreview from '@/images/assets/knowledge-style-museum.svg';
+import { IconClean } from '@/images/iconBox';
 import { WatchAndChat } from '@/module/WatchAndChat';
 import { useStartChatWithVideo } from '@/module/WatchAndChat/providers/WatchAndChatProvider/hooks/useStartChatWithVideo';
-import documentaryPreview from '@/images/assets/knowledge-style-documentary.svg';
-import classroomPreview from '@/images/assets/knowledge-style-classroom.svg';
-import museumPreview from '@/images/assets/knowledge-style-museum.svg';
-import infographicPreview from '@/images/assets/knowledge-style-infographic.svg';
+import { getDesktopAPI } from '@/utils/desktopRuntime';
 
+import { useScrollToBottom } from '../../hooks/useScrollToBottom';
+import { InjectContext } from '../../store/Inject/context';
 import { RenderedMessagesContext } from '../../store/RenderedMessages/context';
-import styles from './index.module.less';
-import ChatArea from '../ChatArea';
 import {
   AspectRatio,
   BackgroundReferenceStrength,
   ContentMode,
   KnowledgeStyle,
-  ReferenceImage,
+  type ReferenceImage,
   RunningPhaseStatus,
   ScriptMode,
   UserConfirmationDataKey,
   VideoGeneratorMessageType,
   VideoGeneratorTaskPhase,
 } from '../../types';
-import { usePlaceholderInfo } from './hooks/usePlaceholderInfo';
-import { useScrollToBottom } from '../../hooks/useScrollToBottom';
-import { Placeholder } from './components/Placeholder';
-import { MessageInput } from './components/MessageInput';
-import { InjectContext } from '../../store/Inject/context';
 import { uploadReferenceImage } from '../../utils/uploadReferenceImage';
+import ChatArea from '../ChatArea';
+import { DesktopStatusPanel } from './components/DesktopStatusPanel';
+import { MessageInput } from './components/MessageInput';
+import { Placeholder, type PlaceholderProps } from './components/Placeholder';
+import { usePlaceholderInfo } from './hooks/usePlaceholderInfo';
+import styles from './index.module.less';
 
 const SCRIPT_FILE_MAX_SIZE = 500 * 1024;
 const SCRIPT_TEXT_MAX_LENGTH = 12000;
@@ -151,6 +159,23 @@ type ContentOptionsOverrides = {
   roleReference?: ReferenceImage;
 };
 
+type ReferenceImageInput =
+  | File
+  | {
+      dataUrl: string;
+      fileName: string;
+      mimeType: string;
+      size: number;
+    };
+
+const getReferenceImageName = (file: ReferenceImageInput) =>
+  file instanceof File ? file.name : file.fileName;
+
+const getReferenceImageType = (file: ReferenceImageInput) =>
+  file instanceof File ? file.type : file.mimeType;
+
+const getReferenceImageSize = (file: ReferenceImageInput) => file.size;
+
 const Conversation = () => {
   const { slots } = useContext(InjectContext);
   const { LimitIndicator } = slots;
@@ -162,8 +187,7 @@ const Conversation = () => {
     sendMessageImplicitly,
     startReply,
     insertBotEmptyMessage,
-  } =
-    useContext(ChatWindowContext);
+  } = useContext(ChatWindowContext);
   const {
     miniMapRef,
     renderedMessages,
@@ -175,8 +199,7 @@ const Conversation = () => {
     updateConfirmationMessage,
     proceedNextPhase,
     userConfirmData,
-  } =
-    useContext(RenderedMessagesContext);
+  } = useContext(RenderedMessagesContext);
   const scriptFileInputRef = useRef<HTMLInputElement>(null);
   const backgroundFileInputRef = useRef<HTMLInputElement>(null);
   const roleFileInputRef = useRef<HTMLInputElement>(null);
@@ -184,14 +207,16 @@ const Conversation = () => {
   const [scriptUploadFileName, setScriptUploadFileName] = useState('');
   const [scriptUploadText, setScriptUploadText] = useState('');
   const [contentMode, setContentMode] = useState(ContentMode.HistoryKnowledge);
-  const [knowledgeStyle, setKnowledgeStyle] = useState(KnowledgeStyle.Documentary);
+  const [knowledgeStyle, setKnowledgeStyle] = useState(
+    KnowledgeStyle.Documentary,
+  );
   const [knowledgeStylePrompt, setKnowledgeStylePrompt] = useState('');
   const [aspectRatio, setAspectRatio] = useState(AspectRatio.Landscape);
-  const [backgroundReference, setBackgroundReference] = useState<ReferenceImage>();
+  const [backgroundReference, setBackgroundReference] =
+    useState<ReferenceImage>();
   const [roleReference, setRoleReference] = useState<ReferenceImage>();
-  const [backgroundReferenceStrength, setBackgroundReferenceStrength] = useState(
-    BackgroundReferenceStrength.Strict,
-  );
+  const [backgroundReferenceStrength, setBackgroundReferenceStrength] =
+    useState(BackgroundReferenceStrength.Strict);
   const [projectId, setProjectId] = useState(() => createProjectId());
   const [backgroundUploading, setBackgroundUploading] = useState(false);
   const [roleUploading, setRoleUploading] = useState(false);
@@ -210,8 +235,10 @@ const Conversation = () => {
     VideoGeneratorTaskPhase.PhaseAudio,
     VideoGeneratorTaskPhase.PhaseFilm,
   ];
-  const visualSettingsLocked = visualLockPhases.includes(finishPhase as VideoGeneratorTaskPhase);
-  const hasUsableMediaUrl = (url?: string) => Boolean(url && url.startsWith('http'));
+  const visualSettingsLocked = visualLockPhases.includes(
+    finishPhase as VideoGeneratorTaskPhase,
+  );
+  const hasUsableMediaUrl = (url?: string) => Boolean(url?.startsWith('http'));
   const hasGeneratedVisualAssets = Boolean(
     userConfirmData?.[UserConfirmationDataKey.RoleImage]?.some(item =>
       item?.images?.some((url: string) => hasUsableMediaUrl(url)),
@@ -219,17 +246,19 @@ const Conversation = () => {
       userConfirmData?.[UserConfirmationDataKey.FirstFrameImages]?.some(item =>
         item?.images?.some((url: string) => hasUsableMediaUrl(url)),
       ) ||
-      userConfirmData?.[UserConfirmationDataKey.Videos]?.some(item => item?.video_gen_task_id) ||
+      userConfirmData?.[UserConfirmationDataKey.Videos]?.some(
+        item => item?.video_gen_task_id,
+      ) ||
       userConfirmData?.[UserConfirmationDataKey.Film]?.url,
   );
   const referenceUploadLocked =
     hasGeneratedVisualAssets ||
-    (
-      runningPhaseStatus === RunningPhaseStatus.Pending &&
-      visualLockPhases.includes(runningPhase as VideoGeneratorTaskPhase)
-    );
+    (runningPhaseStatus === RunningPhaseStatus.Pending &&
+      visualLockPhases.includes(runningPhase as VideoGeneratorTaskPhase));
 
-  const { scrollRef: chatMessageListRef, setAutoScroll } = useScrollToBottom(!autoNext);
+  const { scrollRef: chatMessageListRef, setAutoScroll } = useScrollToBottom(
+    !autoNext,
+  );
 
   const handleScroll = (e: HTMLElement) => {
     if (autoNext) {
@@ -248,9 +277,10 @@ const Conversation = () => {
     if (
       value.trim() === '下一步' &&
       userConfirmData?.[UserConfirmationDataKey.ContentOptions]?.mode &&
-      [VideoGeneratorTaskPhase.PhaseScript, VideoGeneratorTaskPhase.PhaseStoryBoard].includes(
-        finishPhase as VideoGeneratorTaskPhase,
-      )
+      [
+        VideoGeneratorTaskPhase.PhaseScript,
+        VideoGeneratorTaskPhase.PhaseStoryBoard,
+      ].includes(finishPhase as VideoGeneratorTaskPhase)
     ) {
       proceedNextPhase(finishPhase);
       return;
@@ -292,7 +322,51 @@ const Conversation = () => {
     return true;
   };
 
-  const handleScriptFileChange = async (event: React.ChangeEvent<HTMLInputElement>) => {
+  const handleScriptTextSelected = (
+    fileName: string,
+    text: string,
+    size: number,
+  ) => {
+    const extension = fileName.split('.').pop()?.toLowerCase() || '';
+    if (!SCRIPT_FILE_EXTENSIONS.includes(extension)) {
+      Message.error('仅支持 txt、md、text 文本文件');
+      return;
+    }
+    if (size > SCRIPT_FILE_MAX_SIZE) {
+      Message.error('文案文件不能超过 500KB');
+      return;
+    }
+    if (!validateScriptText(text)) {
+      return;
+    }
+    if (text.length > SCRIPT_TEXT_WARN_LENGTH) {
+      Message.warning('文案较长，建议确认内容精简后再继续');
+    }
+    setScriptUploadFileName(fileName);
+    setScriptUploadText(text);
+    setScriptUploadVisible(true);
+  };
+
+  const handleSelectScriptFile = async () => {
+    const desktopAPI = getDesktopAPI();
+    if (!desktopAPI) {
+      scriptFileInputRef.current?.click();
+      return;
+    }
+    try {
+      const file = await desktopAPI.selectScriptFile();
+      if (!file) {
+        return;
+      }
+      handleScriptTextSelected(file.fileName, file.text, file.size);
+    } catch {
+      Message.error('文案读取失败，请换一个文本文件重试');
+    }
+  };
+
+  const handleScriptFileChange = async (
+    event: React.ChangeEvent<HTMLInputElement>,
+  ) => {
     const file = event.target.files?.[0];
     event.target.value = '';
     if (!file) {
@@ -312,12 +386,7 @@ const Conversation = () => {
       if (!validateScriptText(text)) {
         return;
       }
-      if (text.length > SCRIPT_TEXT_WARN_LENGTH) {
-        Message.warning('文案较长，建议确认内容精简后再继续');
-      }
-      setScriptUploadFileName(file.name);
-      setScriptUploadText(text);
-      setScriptUploadVisible(true);
+      handleScriptTextSelected(file.name, text, file.size);
     } catch {
       Message.error('文案读取失败，请换一个文本文件重试');
     }
@@ -325,13 +394,15 @@ const Conversation = () => {
 
   const validateKnowledgeStylePrompt = (text: string) => {
     if (text.trim().length > KNOWLEDGE_STYLE_PROMPT_MAX_LENGTH) {
-      Message.error(`风格提示词不能超过 ${KNOWLEDGE_STYLE_PROMPT_MAX_LENGTH} 字`);
+      Message.error(
+        `风格提示词不能超过 ${KNOWLEDGE_STYLE_PROMPT_MAX_LENGTH} 字`,
+      );
       return false;
     }
     return true;
   };
 
-  const handleBackgroundFile = async (file: File) => {
+  const handleBackgroundFile = async (file: ReferenceImageInput) => {
     if (!file) {
       return;
     }
@@ -339,21 +410,29 @@ const Conversation = () => {
       Message.warning('当前画面已生成，如需更换背景图请先清空当前对话');
       return;
     }
-    if (!BACKGROUND_IMAGE_TYPES.includes(file.type)) {
+    if (!BACKGROUND_IMAGE_TYPES.includes(getReferenceImageType(file))) {
       Message.error('背景图仅支持 jpg、png、webp');
       return;
     }
-    if (file.size > BACKGROUND_IMAGE_MAX_SIZE) {
+    if (getReferenceImageSize(file) > BACKGROUND_IMAGE_MAX_SIZE) {
       Message.error('背景图不能超过 10MB');
       return;
     }
     setBackgroundUploading(true);
     try {
-      const { url, object_key } = await uploadReferenceImage(file);
+      const { url, object_key } = await uploadReferenceImage(
+        file instanceof File
+          ? file
+          : {
+              content_type: file.mimeType,
+              data: file.dataUrl,
+              file_name: file.fileName,
+            },
+      );
       const nextBackgroundReference = {
         url,
         object_key,
-        file_name: file.name,
+        file_name: getReferenceImageName(file),
       };
       setBackgroundReference(nextBackgroundReference);
       syncContentOptions({ backgroundReference: nextBackgroundReference });
@@ -365,7 +444,26 @@ const Conversation = () => {
     }
   };
 
-  const handleBackgroundFileChange = async (event: React.ChangeEvent<HTMLInputElement>) => {
+  const handleSelectBackgroundFile = async () => {
+    const desktopAPI = getDesktopAPI();
+    if (!desktopAPI) {
+      backgroundFileInputRef.current?.click();
+      return;
+    }
+    try {
+      const file = await desktopAPI.selectReferenceImage();
+      if (!file) {
+        return;
+      }
+      await handleBackgroundFile(file);
+    } catch {
+      Message.error('背景图读取失败，请换一张图片重试');
+    }
+  };
+
+  const handleBackgroundFileChange = async (
+    event: React.ChangeEvent<HTMLInputElement>,
+  ) => {
     const file = event.target.files?.[0];
     event.target.value = '';
     if (!file) {
@@ -374,26 +472,36 @@ const Conversation = () => {
     await handleBackgroundFile(file);
   };
 
-  const handleRoleFile = async (file: File) => {
+  const handleRoleFile = async (file: ReferenceImageInput) => {
     if (referenceUploadLocked) {
-      Message.warning('当前角色或画面已生成，如需更换角色参考图请先清空当前对话');
+      Message.warning(
+        '当前角色或画面已生成，如需更换角色参考图请先清空当前对话',
+      );
       return;
     }
-    if (!BACKGROUND_IMAGE_TYPES.includes(file.type)) {
+    if (!BACKGROUND_IMAGE_TYPES.includes(getReferenceImageType(file))) {
       Message.error('角色参考图仅支持 jpg、png、webp');
       return;
     }
-    if (file.size > BACKGROUND_IMAGE_MAX_SIZE) {
+    if (getReferenceImageSize(file) > BACKGROUND_IMAGE_MAX_SIZE) {
       Message.error('角色参考图不能超过 10MB');
       return;
     }
     setRoleUploading(true);
     try {
-      const { url, object_key } = await uploadReferenceImage(file);
+      const { url, object_key } = await uploadReferenceImage(
+        file instanceof File
+          ? file
+          : {
+              content_type: file.mimeType,
+              data: file.dataUrl,
+              file_name: file.fileName,
+            },
+      );
       const nextRoleReference = {
         url,
         object_key,
-        file_name: file.name,
+        file_name: getReferenceImageName(file),
       };
       setRoleReference(nextRoleReference);
       syncContentOptions({ roleReference: nextRoleReference });
@@ -405,7 +513,26 @@ const Conversation = () => {
     }
   };
 
-  const handleRoleFileChange = async (event: React.ChangeEvent<HTMLInputElement>) => {
+  const handleSelectRoleFile = async () => {
+    const desktopAPI = getDesktopAPI();
+    if (!desktopAPI) {
+      roleFileInputRef.current?.click();
+      return;
+    }
+    try {
+      const file = await desktopAPI.selectReferenceImage();
+      if (!file) {
+        return;
+      }
+      await handleRoleFile(file);
+    } catch {
+      Message.error('角色参考图读取失败，请换一张图片重试');
+    }
+  };
+
+  const handleRoleFileChange = async (
+    event: React.ChangeEvent<HTMLInputElement>,
+  ) => {
     const file = event.target.files?.[0];
     event.target.value = '';
     if (!file) {
@@ -417,15 +544,23 @@ const Conversation = () => {
   const getContentOptions = (overrides: ContentOptionsOverrides = {}) => {
     const nextContentMode = overrides.contentMode ?? contentMode;
     const nextKnowledgeStyle = overrides.knowledgeStyle ?? knowledgeStyle;
-    const nextKnowledgeStylePrompt = overrides.knowledgeStylePrompt ?? knowledgeStylePrompt;
+    const nextKnowledgeStylePrompt =
+      overrides.knowledgeStylePrompt ?? knowledgeStylePrompt;
     const nextAspectRatio = overrides.aspectRatio ?? aspectRatio;
-    const nextBackgroundReference = Object.prototype.hasOwnProperty.call(overrides, 'backgroundReference')
+    const nextBackgroundReference = Object.prototype.hasOwnProperty.call(
+      overrides,
+      'backgroundReference',
+    )
       ? overrides.backgroundReference
       : backgroundReference;
-    const nextRoleReference = Object.prototype.hasOwnProperty.call(overrides, 'roleReference')
+    const nextRoleReference = Object.prototype.hasOwnProperty.call(
+      overrides,
+      'roleReference',
+    )
       ? overrides.roleReference
       : roleReference;
-    const nextBackgroundReferenceStrength = overrides.backgroundReferenceStrength ?? backgroundReferenceStrength;
+    const nextBackgroundReferenceStrength =
+      overrides.backgroundReferenceStrength ?? backgroundReferenceStrength;
 
     if (nextContentMode !== ContentMode.HistoryKnowledge) {
       return {
@@ -442,16 +577,21 @@ const Conversation = () => {
       style: nextKnowledgeStyle,
       aspect_ratio: nextAspectRatio,
       ...(trimmedStylePrompt ? { style_prompt: trimmedStylePrompt } : {}),
-      ...(nextBackgroundReference ? {
-        background_reference: nextBackgroundReference,
-        background_reference_strength: nextBackgroundReferenceStrength,
-      } : {}),
+      ...(nextBackgroundReference
+        ? {
+            background_reference: nextBackgroundReference,
+            background_reference_strength: nextBackgroundReferenceStrength,
+          }
+        : {}),
       ...(nextRoleReference ? { role_reference: nextRoleReference } : {}),
     };
   };
 
   const syncContentOptions = (overrides: ContentOptionsOverrides = {}) => {
-    if (!showMessageList && !userConfirmData?.[UserConfirmationDataKey.ContentOptions]) {
+    if (
+      !showMessageList &&
+      !userConfirmData?.[UserConfirmationDataKey.ContentOptions]
+    ) {
       return;
     }
     updateConfirmationMessage({
@@ -464,7 +604,10 @@ const Conversation = () => {
     if (!validateScriptText(script)) {
       return;
     }
-    if (contentMode === ContentMode.HistoryKnowledge && !validateKnowledgeStylePrompt(knowledgeStylePrompt)) {
+    if (
+      contentMode === ContentMode.HistoryKnowledge &&
+      !validateKnowledgeStylePrompt(knowledgeStylePrompt)
+    ) {
       return;
     }
     if (backgroundUploading || roleUploading) {
@@ -502,11 +645,20 @@ const Conversation = () => {
     }, 10);
   };
 
-  const getPlaceHolderProps = () => ({
-    chatStarted: showMessageList,
-    onQuestionClick: handleSend,
-    ...placeholderInfoShow,
-  });
+  const getPlaceHolderProps = (): PlaceholderProps => {
+    const placeholder = Array.isArray(placeholderInfoShow)
+      ? placeholderInfoShow[0]
+      : placeholderInfoShow;
+    return {
+      avatar: placeholder.avatar,
+      chatStarted: showMessageList,
+      disabled: false,
+      name: placeholder.name,
+      onQuestionClick: handleSend,
+      openingRemark: placeholder.openingRemark,
+      preQuestions: placeholder.preQuestions ?? [],
+    };
+  };
 
   const { visible: isFullScreen } = useStartChatWithVideo();
 
@@ -515,6 +667,19 @@ const Conversation = () => {
     setProjectId(createProjectId());
     setActiveScriptFileName('');
     setActiveScriptTextLength(0);
+  };
+
+  const handleOpenProjectFolder = async () => {
+    const desktopAPI = getDesktopAPI();
+    if (!desktopAPI) {
+      Message.info('浏览器模式下请在项目 assets/generated 目录查看素材');
+      return;
+    }
+    try {
+      await desktopAPI.openProjectFolder(projectId);
+    } catch {
+      Message.error('打开素材目录失败');
+    }
   };
 
   const handleContentModeChange = (value: ContentMode) => {
@@ -537,7 +702,9 @@ const Conversation = () => {
     syncContentOptions({ aspectRatio: value });
   };
 
-  const handleBackgroundReferenceStrengthChange = (value: BackgroundReferenceStrength) => {
+  const handleBackgroundReferenceStrengthChange = (
+    value: BackgroundReferenceStrength,
+  ) => {
     setBackgroundReferenceStrength(value);
     syncContentOptions({ backgroundReferenceStrength: value });
   };
@@ -553,7 +720,9 @@ const Conversation = () => {
   };
 
   const getStepStatus = (phase: VideoGeneratorTaskPhase) => {
-    const finishedIndex = WORKFLOW_STEPS.findIndex(item => item.phase === finishPhase);
+    const finishedIndex = WORKFLOW_STEPS.findIndex(
+      item => item.phase === finishPhase,
+    );
     const stepIndex = WORKFLOW_STEPS.findIndex(item => item.phase === phase);
 
     if (finishedIndex >= stepIndex && finishedIndex !== -1) {
@@ -573,13 +742,19 @@ const Conversation = () => {
       <div className={styles.sidebarHeader}>
         <div className={styles.sidebarTitle}>项目设置</div>
         <div className={styles.sidebarMeta}>
-          {settingsLocked ? (visualSettingsLocked ? '本次任务已锁定' : '可调整风格和背景图') : '准备阶段'}
+          {settingsLocked
+            ? visualSettingsLocked
+              ? '本次任务已锁定'
+              : '可调整风格和背景图'
+            : '准备阶段'}
         </div>
       </div>
       <div className={styles.settingsSection}>
         <div className={styles.settingsLabel}>内容来源</div>
         <div className={styles.sourceBox}>
-          <div className={styles.sourceIcon}><IconFile /></div>
+          <div className={styles.sourceIcon}>
+            <IconFile />
+          </div>
           <div className={styles.sourceInfo}>
             <div className={styles.sourceTitle}>
               {activeScriptFileName || scriptUploadFileName || '上传文案'}
@@ -597,9 +772,16 @@ const Conversation = () => {
           className={styles.sidebarActionButton}
           icon={<IconUpload />}
           disabled={settingsLocked}
-          onClick={() => scriptFileInputRef.current?.click()}
+          onClick={handleSelectScriptFile}
         >
           {activeScriptFileName ? '更换文案' : '上传文案'}
+        </Button>
+        <Button
+          className={styles.sidebarActionButton}
+          icon={<IconFolder />}
+          onClick={handleOpenProjectFolder}
+        >
+          打开素材目录
         </Button>
       </div>
       {contentMode === ContentMode.HistoryKnowledge ? (
@@ -608,17 +790,21 @@ const Conversation = () => {
             <div className={styles.settingsLabel}>背景参考图</div>
             {backgroundReference?.url ? (
               <div className={styles.backgroundReferenceCard}>
-                <img src={backgroundReference.url} />
+                <img src={backgroundReference.url} alt="背景参考图" />
                 <div className={styles.backgroundReferenceInfo}>
-                  <div className={styles.backgroundReferenceName}>{backgroundReference.file_name}</div>
-                  <div className={styles.backgroundReferenceHint}>角色、场景、色调和时代氛围</div>
+                  <div className={styles.backgroundReferenceName}>
+                    {backgroundReference.file_name}
+                  </div>
+                  <div className={styles.backgroundReferenceHint}>
+                    角色、场景、色调和时代氛围
+                  </div>
                 </div>
                 <Button
-	                  size="mini"
-	                  type="text"
-	                  icon={<IconDelete />}
-	                  disabled={referenceUploadLocked}
-	                  onClick={handleClearBackgroundReference}
+                  size="mini"
+                  type="text"
+                  icon={<IconDelete />}
+                  disabled={referenceUploadLocked}
+                  onClick={handleClearBackgroundReference}
                 />
               </div>
             ) : (
@@ -627,7 +813,7 @@ const Conversation = () => {
                 data-testid="background-reference-upload"
                 icon={<IconImage />}
                 disabled={referenceUploadLocked || backgroundUploading}
-                onClick={() => backgroundFileInputRef.current?.click()}
+                onClick={handleSelectBackgroundFile}
               >
                 {backgroundUploading ? '上传中...' : '上传背景图'}
               </Button>
@@ -637,10 +823,14 @@ const Conversation = () => {
             <div className={styles.settingsLabel}>角色参考图</div>
             {roleReference?.url ? (
               <div className={styles.backgroundReferenceCard}>
-                <img src={roleReference.url} />
+                <img src={roleReference.url} alt="角色参考图" />
                 <div className={styles.backgroundReferenceInfo}>
-                  <div className={styles.backgroundReferenceName}>{roleReference.file_name}</div>
-                  <div className={styles.backgroundReferenceHint}>角色外观、服饰、人物质感</div>
+                  <div className={styles.backgroundReferenceName}>
+                    {roleReference.file_name}
+                  </div>
+                  <div className={styles.backgroundReferenceHint}>
+                    角色外观、服饰、人物质感
+                  </div>
                 </div>
                 <Button
                   size="mini"
@@ -656,7 +846,7 @@ const Conversation = () => {
                 data-testid="role-reference-upload"
                 icon={<IconImage />}
                 disabled={referenceUploadLocked || roleUploading}
-                onClick={() => roleFileInputRef.current?.click()}
+                onClick={handleSelectRoleFile}
               >
                 {roleUploading ? '上传中...' : '上传角色参考图'}
               </Button>
@@ -665,14 +855,17 @@ const Conversation = () => {
           <div className={styles.settingsSection}>
             <div className={styles.settingsLabel}>风格提示词</div>
             <textarea
-	              className={styles.knowledgePromptTextarea}
-	              value={knowledgeStylePrompt}
-	              disabled={visualSettingsLocked}
-	              placeholder="低饱和、纪录片感、使用地图和文献，不要Q版人物。"
-	              onChange={event => handleKnowledgeStylePromptChange(event.target.value)}
+              className={styles.knowledgePromptTextarea}
+              value={knowledgeStylePrompt}
+              disabled={visualSettingsLocked}
+              placeholder="低饱和、纪录片感、使用地图和文献，不要Q版人物。"
+              onChange={event =>
+                handleKnowledgeStylePromptChange(event.target.value)
+              }
             />
             <div className={styles.knowledgePromptCount}>
-              {knowledgeStylePrompt.trim().length}/{KNOWLEDGE_STYLE_PROMPT_MAX_LENGTH}
+              {knowledgeStylePrompt.trim().length}/
+              {KNOWLEDGE_STYLE_PROMPT_MAX_LENGTH}
             </div>
           </div>
           {backgroundReference?.url ? (
@@ -681,10 +874,10 @@ const Conversation = () => {
                 <div className={styles.settingsLabel}>背景图参考强度</div>
                 <Radio.Group
                   className={styles.inlineRadioGroup}
-	                  type="button"
-	                  value={backgroundReferenceStrength}
-	                  disabled={visualSettingsLocked}
-	                  onChange={handleBackgroundReferenceStrengthChange}
+                  type="button"
+                  value={backgroundReferenceStrength}
+                  disabled={visualSettingsLocked}
+                  onChange={handleBackgroundReferenceStrengthChange}
                 >
                   {BACKGROUND_REFERENCE_STRENGTH_OPTIONS.map(item => (
                     <Radio key={item.value} value={item.value}>
@@ -700,17 +893,21 @@ const Conversation = () => {
             <div className={styles.knowledgeStyleGrid}>
               {KNOWLEDGE_STYLE_OPTIONS.map(item => (
                 <button
-	                  key={item.value}
-	                  type="button"
-	                  className={styles.knowledgeStyleCard}
-	                  data-selected={knowledgeStyle === item.value}
-	                  disabled={visualSettingsLocked}
-	                  onClick={() => handleKnowledgeStyleChange(item.value)}
+                  key={item.value}
+                  type="button"
+                  className={styles.knowledgeStyleCard}
+                  data-selected={knowledgeStyle === item.value}
+                  disabled={visualSettingsLocked}
+                  onClick={() => handleKnowledgeStyleChange(item.value)}
                 >
                   <img src={item.preview} alt={item.label} />
                   <div className={styles.knowledgeStyleText}>
-                    <div className={styles.knowledgeStyleTitle}>{item.label}</div>
-                    <div className={styles.knowledgeStyleDesc}>{item.description}</div>
+                    <div className={styles.knowledgeStyleTitle}>
+                      {item.label}
+                    </div>
+                    <div className={styles.knowledgeStyleDesc}>
+                      {item.description}
+                    </div>
                   </div>
                   <span className={styles.knowledgeStyleCheck} />
                 </button>
@@ -754,7 +951,9 @@ const Conversation = () => {
     <aside className={styles.workflowSidebar}>
       <div className={styles.sidebarHeader}>
         <div className={styles.sidebarTitle}>工作流</div>
-        <div className={styles.sidebarMeta}>{finishPhase ? '进行中' : '未开始'}</div>
+        <div className={styles.sidebarMeta}>
+          {finishPhase ? '进行中' : '未开始'}
+        </div>
       </div>
       <div className={styles.workflowList}>
         {WORKFLOW_STEPS.map(item => {
@@ -772,28 +971,39 @@ const Conversation = () => {
       </div>
       <div className={styles.workflowFooter}>
         <div className={styles.workflowFooterTitle}>当前阶段</div>
-        <div className={styles.workflowFooterValue}>{finishPhase || '等待输入'}</div>
+        <div className={styles.workflowFooterValue}>
+          {finishPhase || '等待输入'}
+        </div>
       </div>
     </aside>
   );
 
   return (
-    <div className={`${styles.conversationWrapper} ${isFullScreen ? styles.conversationWrapperFullscreen : ''}`}>
+    <div
+      className={`${styles.conversationWrapper} ${isFullScreen ? styles.conversationWrapperFullscreen : ''}`}
+    >
       {renderProjectSettings()}
       <div className={styles.conversationContainer}>
         <div className={styles.workspaceTopbar}>
           <div>
             <div className={styles.workspaceTitle}>视频生成工作台</div>
             <div className={styles.workspaceSubtitle}>
-              {contentMode === ContentMode.HistoryKnowledge ? '历史/知识类视频' : '儿童睡前故事'}
+              {contentMode === ContentMode.HistoryKnowledge
+                ? '历史/知识类视频'
+                : '儿童睡前故事'}
             </div>
           </div>
-          <div className={styles.workspaceTabs}>
-            <button className={styles.workspaceTabActive}>对话</button>
-            <button>文案</button>
-            <button>分镜</button>
-            <button>画面</button>
-            <button>成片</button>
+          <div className={styles.workspaceTopbarActions}>
+            <DesktopStatusPanel currentProjectId={projectId} />
+            <div className={styles.workspaceTabs}>
+              <button type="button" className={styles.workspaceTabActive}>
+                对话
+              </button>
+              <button type="button">文案</button>
+              <button type="button">分镜</button>
+              <button type="button">画面</button>
+              <button type="button">成片</button>
+            </div>
           </div>
         </div>
         <div
@@ -802,62 +1012,66 @@ const Conversation = () => {
           onScroll={e => handleScroll(e.currentTarget)}
         >
           <div className="h-full">
-            <Placeholder {...(getPlaceHolderProps() as any)} />
+            <Placeholder {...getPlaceHolderProps()} />
             <ChatArea messages={renderedMessages} />
           </div>
         </div>
-        {!renderedMessages.find(item => item.type === VideoGeneratorMessageType.Multiple) && !isFullScreen && (
-          <div className={styles.conversationInputContainer}>
-            <>
-              {!finishPhase ||
-                ([VideoGeneratorTaskPhase.PhaseScript, VideoGeneratorTaskPhase.PhaseStoryBoard].includes(
-                  finishPhase as VideoGeneratorTaskPhase,
-                ) && (
-                  <div className={styles.resetBtnWrapper}>
-                    <Button
-                      className={styles.resetBtn}
-                      size="small"
-                      icon={<IconClean />}
-                      onClick={() => {
-                        resetWorkflow();
-                      }}
-                    >
-                      {'清空当前对话'}
-                    </Button>
-                  </div>
-                ))}
-            </>
-            <MessageInput
-              activeSendBtn={true}
-              autoFocus
-              placeholder={
-                '输入修改要求，例如：把画面改成博物馆展陈风格'
-              }
-              canSendMessage={!sending}
-              sendMessage={handleSend}
-              extra={inputValue => LimitIndicator && <LimitIndicator text={inputValue} />}
-              actions={
-                !showMessageList
-                  ? [
+        {!renderedMessages.find(
+          item => item.type === VideoGeneratorMessageType.Multiple,
+        ) &&
+          !isFullScreen && (
+            <div className={styles.conversationInputContainer}>
+              <>
+                {!finishPhase ||
+                  ([
+                    VideoGeneratorTaskPhase.PhaseScript,
+                    VideoGeneratorTaskPhase.PhaseStoryBoard,
+                  ].includes(finishPhase as VideoGeneratorTaskPhase) && (
+                    <div className={styles.resetBtnWrapper}>
                       <Button
-                        key="upload-script"
-                        size="mini"
-                        type="text"
-                        icon={<IconUpload />}
-                        disabled={sending}
-                        onClick={event => {
-                          event.stopPropagation();
-                          scriptFileInputRef.current?.click();
+                        className={styles.resetBtn}
+                        size="small"
+                        icon={<IconClean />}
+                        onClick={() => {
+                          resetWorkflow();
                         }}
                       >
-                        上传文案
-                      </Button>,
-                    ]
-                  : undefined
-              }
-            />
-          </div>
-        )}
+                        {'清空当前对话'}
+                      </Button>
+                    </div>
+                  ))}
+              </>
+              <MessageInput
+                activeSendBtn={true}
+                autoFocus
+                placeholder={'输入修改要求，例如：把画面改成博物馆展陈风格'}
+                canSendMessage={!sending}
+                sendMessage={handleSend}
+                extra={inputValue =>
+                  LimitIndicator && <LimitIndicator text={inputValue} />
+                }
+                actions={
+                  !showMessageList
+                    ? [
+                        <Button
+                          key="upload-script"
+                          size="mini"
+                          type="text"
+                          icon={<IconUpload />}
+                          disabled={sending}
+                          onClick={event => {
+                            event.stopPropagation();
+                            handleSelectScriptFile();
+                          }}
+                        >
+                          上传文案
+                        </Button>,
+                      ]
+                    : undefined
+                }
+              />
+            </div>
+          )}
         <WatchAndChat />
       </div>
       {renderWorkflowSidebar()}

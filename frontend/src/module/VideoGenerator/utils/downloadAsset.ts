@@ -1,6 +1,5 @@
+import { getDesktopAPI, resolveBackendUrl } from '@/utils/desktopRuntime';
 import { Message } from '@arco-design/web-react';
-
-const BACKEND_ORIGIN = 'http://127.0.0.1:8889';
 
 const getFilenameFromDisposition = (contentDisposition: string | null) => {
   if (!contentDisposition) {
@@ -28,10 +27,7 @@ export const resolveAssetUrl = (url?: string) => {
   if (!url) {
     return '';
   }
-  if (url.startsWith('http://') || url.startsWith('https://')) {
-    return url;
-  }
-  return `${BACKEND_ORIGIN}${url.startsWith('/') ? url : `/${url}`}`;
+  return resolveBackendUrl(url);
 };
 
 export const downloadAsset = async (url?: string) => {
@@ -42,6 +38,18 @@ export const downloadAsset = async (url?: string) => {
   }
 
   try {
+    const desktopAPI = getDesktopAPI();
+    if (desktopAPI) {
+      const result = await desktopAPI.saveUrlAsFile(
+        resolvedUrl,
+        getFilenameFromUrl(resolvedUrl),
+      );
+      if (result?.filePath) {
+        Message.success('文件已保存');
+      }
+      return;
+    }
+
     const response = await fetch(resolvedUrl);
     if (!response.ok) {
       throw new Error(`download failed: ${response.status}`);

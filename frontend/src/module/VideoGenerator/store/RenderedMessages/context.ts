@@ -44,6 +44,7 @@ interface RenderedMessagesContextType {
   resetMessages: () => void; // 重置消息
   updateRunningPhaseStatus: (status: RunningPhaseStatus) => void; // 更新运行阶段状态，因为视频需要异步轮询完再转为钟态
   correctDescription: (phase: string, data: string) => void; // 修正描述，该函数会修改 RenderedMessages
+  correctPhaseText: (phase: string, content: string) => void; // 修正纯文本阶段内容，该函数会修改 RenderedMessages
   retryFromPhase: (phase: string) => void; // 从某个阶段开始重试
   // 引导组件示例，控制关闭
   miniMapRef: RefObject<{

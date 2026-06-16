@@ -1,7 +1,7 @@
 // Copyright (c) 2025 Bytedance Ltd. and/or its affiliates
 // Licensed under the 【火山方舟】原型应用软件自用许可协议
 // you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at 
+// You may obtain a copy of the License at
 //     https://www.volcengine.com/docs/82379/1433703
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -9,48 +9,75 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-
+import iconImageFailed from '@/images/assets/icon_image_failed.png';
 import { IconErrorTypeHighSaturation } from '@/images/iconBox';
 import { ReactComponent as IconMediaLoading } from '@/images/icon_media_loading.svg';
-import iconImageFailed from '@/images/assets/icon_image_failed.png';
 
 import styles from './index.module.less';
-
 
 interface ImageBlockProps {
   imgUrl?: string;
   imgText?: string;
+  alt?: string;
+  previewable?: boolean;
+  onPreview?: (src: string) => void;
 }
 
-const ImageBlock = ({ imgUrl, imgText }: ImageBlockProps) => {
+const ImageBlock = ({
+  imgUrl,
+  imgText,
+  alt,
+  previewable,
+  onPreview,
+}: ImageBlockProps) => {
   const renderImg = () => {
     if (imgUrl === 'Post Img Risk Not Pass') {
       return (
         <div className={styles.imgRisk}>
           <IconErrorTypeHighSaturation fontSize={76} />
-          <div className={styles.riskText}>
-            {'图片内容不合规'}
-          </div>
+          <div className={styles.riskText}>{'图片内容不合规'}</div>
         </div>
       );
     }
     if (imgUrl && !imgUrl?.startsWith('http')) {
       return (
         <div className={styles.imgRisk}>
-          <img src={iconImageFailed} style={{ width: 76, height: 76 }} />
+          <img
+            src={iconImageFailed}
+            alt="图片生成失败"
+            style={{ width: 76, height: 76 }}
+          />
           <div className={styles.riskText}>{'图片生成失败'}</div>
         </div>
       );
     }
     if (imgUrl) {
-      return (
+      const image = (
         <img
           src={imgUrl}
+          alt={alt || imgText || '生成图片'}
           onError={e => {
             e.currentTarget.src = iconImageFailed;
           }}
         />
       );
+
+      if (previewable) {
+        return (
+          <button
+            type="button"
+            className={styles.previewButton}
+            aria-label="打开图片预览"
+            onClick={() => {
+              onPreview?.(imgUrl);
+            }}
+          >
+            {image}
+          </button>
+        );
+      }
+
+      return image;
     }
     return (
       <div className={styles.background}>

@@ -1,7 +1,7 @@
 // Copyright (c) 2025 Bytedance Ltd. and/or its affiliates
 // Licensed under the 【火山方舟】原型应用软件自用许可协议
 // you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at 
+// You may obtain a copy of the License at
 //     https://www.volcengine.com/docs/82379/1433703
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -9,20 +9,38 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-import { useEffect } from 'react';
-import { Helmet } from '@modern-js/runtime/head';
-import { v4 as uuidV4 } from 'uuid';
 import VideoGenerator from '@/module/VideoGenerator';
+import { GetVideoGenTask } from '@/services/getVideoGenTask';
+import { getBackendOrigin, getDesktopAPI } from '@/utils/desktopRuntime';
+import { Helmet } from '@modern-js/runtime/head';
+import { useEffect, useMemo, useState } from 'react';
+import { v4 as uuidV4 } from 'uuid';
 
 import './index.css';
-import { GetVideoGenTask } from '@/services/getVideoGenTask';
 
 const Index = () => {
   const storeKey =
     localStorage.getItem('ark-interactive-video-store-key') || uuidV4();
+  const [backendOrigin, setBackendOrigin] = useState(() => getBackendOrigin());
+  const botCompletionUrl = useMemo(
+    () => `${backendOrigin}/api/v3/bots/chat/completions`,
+    [backendOrigin],
+  );
 
   useEffect(() => {
     localStorage.setItem('ark-interactive-video-store-key', storeKey);
+  }, [storeKey]);
+
+  useEffect(() => {
+    const desktopAPI = getDesktopAPI();
+    if (!desktopAPI) {
+      return undefined;
+    }
+    return desktopAPI.onBackendStatusChanged(status => {
+      if (status.backendOrigin) {
+        setBackendOrigin(status.backendOrigin.replace(/\/+$/, ''));
+      }
+    });
   }, []);
 
   return (
@@ -35,7 +53,7 @@ const Index = () => {
         />
       </Helmet>
       <main>
-        <div className="interactive-video" style={{ height: `100vh` }}>
+        <div className="interactive-video" style={{ height: '100vh' }}>
           <VideoGenerator
             assistantInfo={{
               Name: '历史知识视频生成器',
@@ -51,14 +69,12 @@ const Index = () => {
                 ],
               },
             }}
-            botUrl="http://127.0.0.1:8889/api/v3/bots/chat/completions"
-            botChatUrl="http://127.0.0.1:8889/api/v3/bots/chat/completions"
+            botUrl={botCompletionUrl}
+            botChatUrl={botCompletionUrl}
             storeUniqueId={storeKey}
-            api={
-              {
-                GetVideoGenTask: GetVideoGenTask,
-              }
-            }
+            api={{
+              GetVideoGenTask: GetVideoGenTask,
+            }}
             slots={{}}
           />
         </div>

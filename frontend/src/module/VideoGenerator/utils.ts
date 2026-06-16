@@ -1,7 +1,7 @@
 // Copyright (c) 2025 Bytedance Ltd. and/or its affiliates
 // Licensed under the 【火山方舟】原型应用软件自用许可协议
 // you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at 
+// You may obtain a copy of the License at
 //     https://www.volcengine.com/docs/82379/1433703
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -12,7 +12,22 @@
 // starling-disable-file
 import { compact } from 'lodash';
 
-import { DescriptionType, VideoGeneratorTaskPhase } from './types';
+import { type DescriptionType, VideoGeneratorTaskPhase } from './types';
+
+const STORYBOARD_ENGLISH_LINE_REGEXP = /^\s*英文台词[：:].*$/;
+
+export const hasStoryboardEnglishLines = (content?: string) =>
+  Boolean(
+    content
+      ?.split(/\r?\n/)
+      .some(line => STORYBOARD_ENGLISH_LINE_REGEXP.test(line)),
+  );
+
+export const hideStoryboardEnglishLines = (content?: string) =>
+  content
+    ?.split(/\r?\n/)
+    .filter(line => !STORYBOARD_ENGLISH_LINE_REGEXP.test(line))
+    .join('\n') ?? '';
 
 export const matchRoleDescription = (description: string) => {
   const regExp = /(角色[\d]+)：\n角色：(.*)\n(.*)/g;
@@ -55,7 +70,9 @@ export const matchFirstFrameDescription = (description: string) => {
   // 再把角色和内容分开
   const parsedData = compact(
     splitContent.map(item => {
-      const matchArray = item.match(/(分镜[\d]+)：\n角色：(.*)\n首帧描述：(.*)/);
+      const matchArray = item.match(
+        /(分镜[\d]+)：\n角色：(.*)\n首帧描述：(.*)/,
+      );
       if (!matchArray) {
         return undefined;
       }
@@ -133,6 +150,8 @@ export const mergedOriginDescriptionsByPhase = (params: {
     }
     return item;
   });
-  const mergedDescriptionStr = mergedDescriptionList.map(item => processByPhase(phase, item)).join('\n');
+  const mergedDescriptionStr = mergedDescriptionList
+    .map(item => processByPhase(phase, item))
+    .join('\n');
   return mergedDescriptionStr;
 };

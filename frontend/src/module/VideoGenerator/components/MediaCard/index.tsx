@@ -1,7 +1,7 @@
 // Copyright (c) 2025 Bytedance Ltd. and/or its affiliates
 // Licensed under the 【火山方舟】原型应用软件自用许可协议
 // you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at 
+// You may obtain a copy of the License at
 //     https://www.volcengine.com/docs/82379/1433703
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -9,23 +9,25 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-import { ReactNode, useCallback, useEffect, useState } from 'react';
+import { type ReactNode, useCallback, useEffect, useState } from 'react';
 
-import { ButtonProps } from '@arco-design/web-react';
-import { after } from 'lodash';
+import type { ButtonProps } from '@arco-design/web-react';
 import cx from 'classnames';
+import { after } from 'lodash';
 
 import usePageVisibility from '@/hooks/usePageVisibility';
 
+import type { ResultType } from '../../hooks/useRefetchRunningTask';
+import { resolveAssetUrl } from '../../utils/downloadAsset';
+import ImagePreviewModal from '../ImagePreviewModal';
+import AudioBlock from './components/AudioBlock';
+import EditModal from './components/EditModal';
+import ImageBlock from './components/ImageBlock';
+import MediaCardFooter from './components/MediaCardFooter';
+import PromptBlock from './components/PromptBlock';
+import VideoBlock from './components/VideoBlock';
 import VideoPlayer from './components/VideoPlayer';
 import styles from './index.module.less';
-import PromptBlock from './components/PromptBlock';
-import MediaCardFooter from './components/MediaCardFooter';
-import ImageBlock from './components/ImageBlock';
-import EditModal from './components/EditModal';
-import AudioBlock from './components/AudioBlock';
-import VideoBlock from './components/VideoBlock';
-import { resolveAssetUrl } from '../../utils/downloadAsset';
 
 interface Props {
   src: string;
@@ -36,7 +38,12 @@ interface Props {
   title?: ReactNode;
   header?: ReactNode | ((title: ReactNode) => ReactNode);
   footer?: ReactNode;
-  modelInfo?: { displayName: string; modelName: string; modelVersion?: string; imgSrc: string };
+  modelInfo?: {
+    displayName: string;
+    modelName: string;
+    modelVersion?: string;
+    imgSrc: string;
+  };
   prompt?: ReactNode | string;
   editButtonProps?: ButtonProps;
   regenerateButtonProps?: ButtonProps;
@@ -47,11 +54,13 @@ interface Props {
   disabled?: boolean;
   afterLoad?: () => void;
   afterTerminal?: (success: boolean) => void;
-  onVideoTaskUpdate?: (task: Record<string, any>) => void;
+  onVideoTaskUpdate?: (task: ResultType) => void;
   videoProjectId?: string;
   videoIndex?: number;
   editWarning?: boolean;
   regenerateWarning?: boolean;
+  previewable?: boolean;
+  previewVariant?: 'square' | 'landscape' | 'portrait';
 }
 
 const MediaCard = (props: Props) => {
@@ -80,18 +89,26 @@ const MediaCard = (props: Props) => {
     onVideoTaskUpdate,
     videoProjectId,
     videoIndex,
+    previewable,
+    previewVariant = 'square',
   } = props;
 
   const [visible, setVisible] = useState(false);
+  const [previewSrc, setPreviewSrc] = useState<string>();
   const [videoLink, setVideoLink] = useState<string>();
   const [videoMap, setVideoMap] = useState<Record<string, string>>({});
 
-  const updateVideoLink = useCallback((value: string) => {
-    setVideoLink(current => (current === value ? current : value));
-    if (src) {
-      setVideoMap(current => (current[src] === value ? current : { ...current, [src]: value }));
-    }
-  }, [src]);
+  const updateVideoLink = useCallback(
+    (value: string) => {
+      setVideoLink(current => (current === value ? current : value));
+      if (src) {
+        setVideoMap(current =>
+          current[src] === value ? current : { ...current, [src]: value },
+        );
+      }
+    },
+    [src],
+  );
 
   usePageVisibility(() => {
     if (videoLink) {
@@ -146,10 +163,17 @@ const MediaCard = (props: Props) => {
           />
         );
       case 'audio':
-        return <AudioBlock audioLink={src} hasRadius={view} audioImg={audioImg} />;
+        return (
+          <AudioBlock audioLink={src} hasRadius={view} audioImg={audioImg} />
+        );
       case 'image':
         return view ? (
-          <ImageBlock imgUrl={src} />
+          <ImageBlock
+            imgUrl={src}
+            alt={typeof title === 'string' ? title : undefined}
+            previewable={previewable}
+            onPreview={setPreviewSrc}
+          />
         ) : (
           <div className={styles.imageWrapper}>
             <ImageBlock imgUrl={src} />
@@ -195,10 +219,16 @@ const MediaCard = (props: Props) => {
   };
 
   return (
-    <div className={cx(styles.wrapper, { [styles.warningBorder]: regenerateWarning || editWarning })}>
-      <>{renderHeader()}</>
+    <div
+      className={cx(styles.wrapper, {
+        [styles.warningBorder]: regenerateWarning || editWarning,
+        [styles.landscape]: previewVariant === 'landscape',
+        [styles.portrait]: previewVariant === 'portrait',
+      })}
+    >
+      {renderHeader()}
       <div className={styles.mediaWrapper}>{renderMedia(true)}</div>
-      <>{renderPrompt()}</>
+      {renderPrompt()}
       <div style={{ width: '100%' }}>{renderFooter()}</div>
       <EditModal
         visible={visible}
@@ -211,6 +241,14 @@ const MediaCard = (props: Props) => {
         promptLoading={promptLoading}
         type={type}
         tone={tone}
+      />
+      <ImagePreviewModal
+        open={Boolean(previewSrc)}
+        src={previewSrc}
+        title={typeof title === 'string' ? title : undefined}
+        onClose={() => {
+          setPreviewSrc(undefined);
+        }}
       />
     </div>
   );

@@ -1,0 +1,491 @@
+const { app, BrowserWindow, Menu, dialog, ipcMain, shell } = require('electron');
+const childProcess = require('node:child_process');
+const fs = require('node:fs');
+const http = require('node:http');
+const net = require('node:net');
+const os = require('node:os');
+const path = require('node:path');
+
+const DESKTOP_DIR = path.resolve(__dirname, '..', '..');
+const PROJECT_ROOT = path.resolve(DESKTOP_DIR, '..');
+const FRONTEND_DIR = path.join(PROJECT_ROOT, 'frontend');
+const FRONTEND_DIST_DIR = path.join(FRONTEND_DIR, 'dist');
+const BACKEND_DIR = path.join(PROJECT_ROOT, 'backend');
+const DEFAULT_BACKEND_PORT = Number(process.env.CHAT2CARTOON_BACKEND_PORT || process.env._FAAS_RUNTIME_PORT || 8889);
+const DEFAULT_RENDERER_URL = process.env.CHAT2CARTOON_RENDERER_URL || 'http://localhost:8080';
+const DEFAULT_ASSET_ROOT = process.env.CHAT2CARTOON_ASSET_ROOT || path.join(PROJECT_ROOT, 'assets', 'generated');
+
+let mainWindow = null;
+let backendProcess = null;
+let backendOrigin = `http://127.0.0.1:${DEFAULT_BACKEND_PORT}`;
+let staticServer = null;
+let staticServerUrl = '';
+let logsDir = '';
+
+const ensureDir = dir => {
+  fs.mkdirSync(dir, { recursive: true });
+  return dir;
+};
+
+const writeLogLine = (filePath, line) => {
+  fs.appendFile(filePath, line, error => {
+    if (error) {
+      console.error(error);
+    }
+  });
+};
+
+const sanitizeProjectId = projectId => {
+  const value = String(projectId || '').trim().replace(/[^a-zA-Z0-9_-]/g, '_');
+  return value || 'default';
+};
+
+const getMimeType = filePath => {
+  const ext = path.extname(filePath).toLowerCase();
+  if (['.jpg', '.jpeg'].includes(ext)) {
+    return 'image/jpeg';
+  }
+  if (ext === '.png') {
+    return 'image/png';
+  }
+  if (ext === '.webp') {
+    return 'image/webp';
+  }
+  return 'application/octet-stream';
+};
+
+const getPythonExecutable = () => {
+  if (process.env.CHAT2CARTOON_BACKEND_PYTHON) {
+    return process.env.CHAT2CARTOON_BACKEND_PYTHON;
+  }
+  const condaPython = '/opt/anaconda3/envs/video-gen1/bin/python';
+  if (fs.existsSync(condaPython)) {
+    return condaPython;
+  }
+  return process.platform === 'win32' ? 'python' : 'python3';
+};
+
+const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
+
+const pingBackend = async origin => {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 1200);
+  try {
+    const response = await fetch(`${origin}/v1/ping`, {
+      method: 'GET',
+      signal: controller.signal,
+    });
+    return response.ok;
+  } catch {
+    return false;
+  } finally {
+    clearTimeout(timer);
+  }
+};
+
+const checkDesktopBackend = async origin => {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 1200);
+  try {
+    const response = await fetch(`${origin}/v1/desktop/status`, {
+      method: 'GET',
+      signal: controller.signal,
+    });
+    if (!response.ok) {
+      return false;
+    }
+    const payload = await response.json();
+    return payload?.status === 'ok';
+  } catch {
+    return false;
+  } finally {
+    clearTimeout(timer);
+  }
+};
+
+const isPortAvailable = port =>
+  new Promise(resolve => {
+    const server = net.createServer();
+    server.once('error', () => resolve(false));
+    server.once('listening', () => {
+      server.close(() => resolve(true));
+    });
+    server.listen(port, '127.0.0.1');
+  });
+
+const findAvailablePort = async startPort => {
+  for (let port = startPort; port < startPort + 40; port += 1) {
+    if (await isPortAvailable(port)) {
+      return port;
+    }
+  }
+  throw new Error(`No available local port near ${startPort}`);
+};
+
+const waitForBackend = async origin => {
+  for (let attempt = 0; attempt < 90; attempt += 1) {
+    if (await checkDesktopBackend(origin)) {
+      return true;
+    }
+    await wait(500);
+  }
+  return false;
+};
+
+const notifyBackendStatus = status => {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    return;
+  }
+  mainWindow.webContents.send('backend:status-changed', status);
+};
+
+const startBackend = async ({ reuseExisting = true } = {}) => {
+  const preferredOrigin = `http://127.0.0.1:${DEFAULT_BACKEND_PORT}`;
+  if (reuseExisting && (await checkDesktopBackend(preferredOrigin))) {
+    backendOrigin = preferredOrigin;
+    return backendOrigin;
+  }
+
+  const port = (await isPortAvailable(DEFAULT_BACKEND_PORT))
+    ? DEFAULT_BACKEND_PORT
+    : await findAvailablePort(DEFAULT_BACKEND_PORT + 1);
+  backendOrigin = `http://127.0.0.1:${port}`;
+
+  const python = getPythonExecutable();
+  const backendLog = path.join(logsDir, 'backend.log');
+  const env = {
+    ...process.env,
+    _FAAS_RUNTIME_PORT: String(port),
+    ASSET_ROOT: DEFAULT_ASSET_ROOT,
+  };
+
+  backendProcess = childProcess.spawn(python, ['index.py'], {
+    cwd: BACKEND_DIR,
+    env,
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+
+  backendProcess.stdout.on('data', data => {
+    writeLogLine(backendLog, data.toString());
+  });
+  backendProcess.stderr.on('data', data => {
+    writeLogLine(backendLog, data.toString());
+  });
+  backendProcess.on('exit', (code, signal) => {
+    notifyBackendStatus({
+      running: false,
+      backendOrigin,
+      message: `Backend exited: code=${code ?? ''} signal=${signal ?? ''}`,
+    });
+  });
+
+  if (!(await waitForBackend(backendOrigin))) {
+    throw new Error(`Backend did not become ready at ${backendOrigin}`);
+  }
+
+  notifyBackendStatus({
+    backendOrigin,
+    desktopReady: true,
+    running: true,
+  });
+
+  return backendOrigin;
+};
+
+const getStaticContentType = filePath => {
+  const ext = path.extname(filePath).toLowerCase();
+  const types = {
+    '.css': 'text/css; charset=utf-8',
+    '.html': 'text/html; charset=utf-8',
+    '.ico': 'image/x-icon',
+    '.js': 'text/javascript; charset=utf-8',
+    '.json': 'application/json; charset=utf-8',
+    '.map': 'application/json; charset=utf-8',
+    '.png': 'image/png',
+    '.svg': 'image/svg+xml',
+    '.webp': 'image/webp',
+  };
+  return types[ext] || 'application/octet-stream';
+};
+
+const startStaticServer = async distDir => {
+  const port = await findAvailablePort(39100);
+  const indexCandidates = [
+    path.join(distDir, 'index.html'),
+    path.join(distDir, 'html', 'main', 'index.html'),
+  ];
+  const fallbackIndex =
+    indexCandidates.find(candidate => fs.existsSync(candidate)) ||
+    indexCandidates[0];
+
+  staticServer = http.createServer((request, response) => {
+    const url = new URL(request.url || '/', `http://127.0.0.1:${port}`);
+    const pathname = decodeURIComponent(url.pathname);
+    const safePath = pathname.replace(/^\/+/, '');
+    let filePath = path.join(distDir, safePath);
+
+    if (!filePath.startsWith(distDir)) {
+      response.writeHead(403);
+      response.end('Forbidden');
+      return;
+    }
+
+    if (!fs.existsSync(filePath) || fs.statSync(filePath).isDirectory()) {
+      filePath = fallbackIndex;
+    }
+
+    fs.readFile(filePath, (error, content) => {
+      if (error) {
+        response.writeHead(404);
+        response.end('Not found');
+        return;
+      }
+      response.writeHead(200, { 'Content-Type': getStaticContentType(filePath) });
+      response.end(content);
+    });
+  });
+
+  await new Promise(resolve => staticServer.listen(port, '127.0.0.1', resolve));
+  staticServerUrl = `http://127.0.0.1:${port}`;
+  return staticServerUrl;
+};
+
+const getRendererUrl = async () => {
+  if (process.env.CHAT2CARTOON_RENDERER_URL) {
+    return process.env.CHAT2CARTOON_RENDERER_URL;
+  }
+  const packagedDist = path.join(process.resourcesPath || '', 'frontend-dist');
+  if (app.isPackaged && fs.existsSync(packagedDist)) {
+    return startStaticServer(packagedDist);
+  }
+  if (
+    process.env.CHAT2CARTOON_USE_FRONTEND_DIST === '1' &&
+    (fs.existsSync(path.join(FRONTEND_DIST_DIR, 'index.html')) ||
+      fs.existsSync(path.join(FRONTEND_DIST_DIR, 'html', 'main', 'index.html')))
+  ) {
+    return startStaticServer(FRONTEND_DIST_DIR);
+  }
+  return DEFAULT_RENDERER_URL;
+};
+
+const createMenu = () => {
+  const template = [
+    {
+      label: '文件',
+      submenu: [
+        {
+          label: '打开素材目录',
+          click: () => shell.openPath(DEFAULT_ASSET_ROOT),
+        },
+        {
+          label: '打开日志目录',
+          click: () => shell.openPath(logsDir),
+        },
+        { type: 'separator' },
+        { role: 'quit', label: '退出' },
+      ],
+    },
+    {
+      label: '视图',
+      submenu: [
+        { role: 'reload', label: '重新加载' },
+        { role: 'toggleDevTools', label: '开发者工具' },
+        { type: 'separator' },
+        { role: 'resetZoom', label: '重置缩放' },
+        { role: 'zoomIn', label: '放大' },
+        { role: 'zoomOut', label: '缩小' },
+      ],
+    },
+    {
+      label: '帮助',
+      submenu: [
+        {
+          label: '检查后端状态',
+          click: async () => {
+            const running = await pingBackend(backendOrigin);
+            dialog.showMessageBox(mainWindow, {
+              type: running ? 'info' : 'warning',
+              message: running ? '本地后端运行中' : '本地后端未响应',
+              detail: backendOrigin,
+            });
+          },
+        },
+      ],
+    },
+  ];
+  Menu.setApplicationMenu(Menu.buildFromTemplate(template));
+};
+
+const createWindow = async rendererUrl => {
+  mainWindow = new BrowserWindow({
+    width: 1440,
+    height: 940,
+    minWidth: 1120,
+    minHeight: 720,
+    title: '历史知识视频生成器',
+    backgroundColor: '#f6f7f9',
+    webPreferences: {
+      preload: path.join(DESKTOP_DIR, 'src', 'preload', 'index.cjs'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: false,
+      additionalArguments: [
+        `--chat2cartoon-backend-origin=${backendOrigin}`,
+        `--chat2cartoon-asset-root=${DEFAULT_ASSET_ROOT}`,
+      ],
+    },
+  });
+
+  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+    shell.openExternal(url);
+    return { action: 'deny' };
+  });
+
+  await mainWindow.loadURL(rendererUrl);
+};
+
+const registerIpcHandlers = () => {
+  ipcMain.handle('runtime:get-info', () => ({
+    appVersion: app.getVersion(),
+    assetRoot: DEFAULT_ASSET_ROOT,
+    backendOrigin,
+    isPackaged: app.isPackaged,
+    platform: process.platform,
+  }));
+
+  ipcMain.handle('backend:get-status', async () => ({
+    backendOrigin,
+    desktopReady: await checkDesktopBackend(backendOrigin),
+    running: await pingBackend(backendOrigin),
+  }));
+
+  ipcMain.handle('backend:restart', async () => {
+    if (backendProcess) {
+      backendProcess.kill();
+      backendProcess = null;
+    }
+    await startBackend({ reuseExisting: false });
+    return {
+      backendOrigin,
+      desktopReady: true,
+      running: true,
+    };
+  });
+
+  ipcMain.handle('dialog:select-script-file', async () => {
+    const result = await dialog.showOpenDialog(mainWindow, {
+      properties: ['openFile'],
+      filters: [{ name: 'Text', extensions: ['txt', 'md', 'text'] }],
+    });
+    if (result.canceled || !result.filePaths[0]) {
+      return null;
+    }
+    const filePath = result.filePaths[0];
+    const stat = fs.statSync(filePath);
+    const text = fs.readFileSync(filePath, 'utf-8');
+    return {
+      fileName: path.basename(filePath),
+      path: filePath,
+      size: stat.size,
+      text,
+    };
+  });
+
+  ipcMain.handle('dialog:select-reference-image', async () => {
+    const result = await dialog.showOpenDialog(mainWindow, {
+      properties: ['openFile'],
+      filters: [{ name: 'Images', extensions: ['jpg', 'jpeg', 'png', 'webp'] }],
+    });
+    if (result.canceled || !result.filePaths[0]) {
+      return null;
+    }
+    const filePath = result.filePaths[0];
+    const stat = fs.statSync(filePath);
+    const mimeType = getMimeType(filePath);
+    const base64 = fs.readFileSync(filePath).toString('base64');
+    return {
+      dataUrl: `data:${mimeType};base64,${base64}`,
+      fileName: path.basename(filePath),
+      mimeType,
+      path: filePath,
+      size: stat.size,
+    };
+  });
+
+  ipcMain.handle('shell:open-project-folder', async (_event, projectId) => {
+    const projectDir = path.join(DEFAULT_ASSET_ROOT, sanitizeProjectId(projectId));
+    ensureDir(projectDir);
+    return shell.openPath(projectDir);
+  });
+
+  ipcMain.handle('shell:open-logs-folder', async () => {
+    ensureDir(logsDir);
+    return shell.openPath(logsDir);
+  });
+
+  ipcMain.handle('download:save-url-as-file', async (_event, url, suggestedName) => {
+    const resolvedUrl = String(url || '').startsWith('/')
+      ? `${backendOrigin}${url}`
+      : String(url || '');
+    if (!/^https?:\/\//.test(resolvedUrl)) {
+      throw new Error('Only http(s) downloads are supported');
+    }
+
+    const saveResult = await dialog.showSaveDialog(mainWindow, {
+      defaultPath: suggestedName || path.basename(new URL(resolvedUrl).pathname) || 'asset',
+    });
+    if (saveResult.canceled || !saveResult.filePath) {
+      return null;
+    }
+
+    const response = await fetch(resolvedUrl);
+    if (!response.ok) {
+      throw new Error(`Download failed: ${response.status}`);
+    }
+    const buffer = Buffer.from(await response.arrayBuffer());
+    fs.writeFileSync(saveResult.filePath, buffer);
+    return {
+      filePath: saveResult.filePath,
+    };
+  });
+};
+
+app.whenReady().then(async () => {
+  app.setName('历史知识视频生成器');
+  logsDir = ensureDir(path.join(app.getPath('logs'), 'chat2cartoon'));
+  ensureDir(DEFAULT_ASSET_ROOT);
+  registerIpcHandlers();
+  createMenu();
+
+  try {
+    await startBackend();
+  } catch (error) {
+    writeLogLine(path.join(logsDir, 'app.log'), `${new Date().toISOString()} ${String(error.stack || error)}${os.EOL}`);
+  }
+
+  const rendererUrl = await getRendererUrl();
+  await createWindow(rendererUrl);
+
+  app.on('activate', async () => {
+    if (BrowserWindow.getAllWindows().length === 0) {
+      await createWindow(rendererUrl);
+    }
+  });
+});
+
+app.on('window-all-closed', () => {
+  if (process.platform !== 'darwin') {
+    app.quit();
+  }
+});
+
+app.on('before-quit', () => {
+  if (backendProcess) {
+    backendProcess.kill();
+    backendProcess = null;
+  }
+  if (staticServer) {
+    staticServer.close();
+    staticServer = null;
+  }
+});

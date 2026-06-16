@@ -69,6 +69,29 @@ def _build_role_reference_image_map(role_names: List[str], role_images: List[Rol
     return role_reference_image_map
 
 
+def _get_visual_character_names(
+        first_frame_description: FirstFrameDescription,
+        role_reference_image_map: Dict[str, str],
+) -> List[str]:
+    visual_character_names = []
+
+    def append_visual_character(name: str):
+        normalized_name = _normalize_role_name(name)
+        if not normalized_name or normalized_name == "旁白" or normalized_name in visual_character_names:
+            return
+        visual_character_names.append(normalized_name)
+
+    for character in first_frame_description.characters:
+        append_visual_character(character)
+
+    normalized_description = _normalize_role_name(first_frame_description.description)
+    for role_name in role_reference_image_map.keys():
+        if role_name and role_name in normalized_description:
+            append_visual_character(role_name)
+
+    return visual_character_names
+
+
 def _get_reference_images(
         first_frame_description: FirstFrameDescription,
         role_reference_image_map: Dict[str, str],
@@ -82,13 +105,11 @@ def _get_reference_images(
         if image and image not in reference_images:
             reference_images.append(image)
 
-    if background_reference_first:
-        append_reference_image(background_reference_image)
+    def append_role_reference_by_name(name: str):
+        character_name = _normalize_role_name(name)
+        if not character_name:
+            return
 
-    append_reference_image(uploaded_role_reference_image)
-
-    for character in first_frame_description.characters:
-        character_name = _normalize_role_name(character)
         reference_image = role_reference_image_map.get(character_name)
         if not reference_image:
             for role_name, image in role_reference_image_map.items():
@@ -96,6 +117,14 @@ def _get_reference_images(
                     reference_image = image
                     break
         append_reference_image(reference_image)
+
+    if background_reference_first:
+        append_reference_image(background_reference_image)
+
+    append_reference_image(uploaded_role_reference_image)
+
+    for character in _get_visual_character_names(first_frame_description, role_reference_image_map):
+        append_role_reference_by_name(character)
 
     append_reference_image(background_reference_image)
     return reference_images
@@ -106,19 +135,37 @@ def _build_history_knowledge_image_prompt(
         reference_images: List[str],
         has_background_reference: bool,
         content_options: Dict,
+        visual_character_names: Optional[List[str]] = None,
 ) -> str:
+    characters = "，".join(visual_character_names or [])
     reference_instruction = ""
     if reference_images:
         reference_instruction = (
             "参考图使用规则：用户上传的任意参考图和已生成角色图都必须共同约束分镜画面。"
             "角色图用于保持人物外观一致；用户上传参考图用于建立统一画风、色调、光照、材质、镜头质感、场景结构和时代氛围。"
+            "角色参考图只决定人物外观、服饰和身份气质，不代表最终画面中人物的大小、位置或构图比例。"
             "不得逐像素复制参考图，不得照搬参考图中的无关文字或人物。"
+        )
+    if characters:
+        reference_instruction += (
+            f"当前分镜必须出现的视觉角色：{characters}。"
+            "这些视觉角色必须以清晰可辨认的人物或主体形象出现在画面中，"
+            "必须保持参考图中的脸型、五官、服饰颜色、头冠、体型比例和身份气质。"
+            "不得用普通官员、群像人物、剪影或半透明符号替代这些已生成角色图中的人物。"
+            "但除非分镜描述明确要求人物特写，角色不要占据画面主体，不要生成大头照、半身肖像或居中海报式人物。"
         )
     if has_background_reference:
         reference_instruction += (
             "当前分镜必须看起来属于背景图同一套视觉设计。"
+            "背景参考图应主导整体构图、时代氛围、色调、空间纵深和场景信息。"
             "可以根据剧情改变镜头位置和主体动作，但不要让每个分镜机械复刻同一背景。"
         )
+    reference_instruction += (
+        "历史知识类分镜默认以背景、建筑、文献、地图、道具和空间关系承载信息。"
+        "默认使用远景、中远景或中景；背景/场景/信息元素占画面约60%-80%，角色占画面约15%-35%。"
+        "纯地图、文献、时间线或建筑说明画面中，角色可以不出现或只占0%-15%。"
+        "角色应融入场景，可位于侧边、中景或远景位置，清晰但不压过背景与知识信息。"
+    )
 
     return (
         f"{reference_instruction}"
@@ -240,6 +287,7 @@ class FirstFrameImageGenerator(Generator):
         generated_first_frame_image_indexes = set([ffi.index for ffi in generated_first_frame_images])
         for index, rd in enumerate(first_frame_descriptions):
             if index not in generated_first_frame_image_indexes:
+                visual_character_names = _get_visual_character_names(rd, role_reference_image_map)
                 reference_images = _get_reference_images(
                     rd,
                     role_reference_image_map,
@@ -253,7 +301,13 @@ class FirstFrameImageGenerator(Generator):
                     f"background_reference_used={bool(background_reference_image)}, "
                     f"reference_images_count={len(reference_images)}"
                 )
-                tasks.append(asyncio.create_task(self._generate_image(index, rd, reference_images, content_options)))
+                tasks.append(asyncio.create_task(self._generate_image(
+                    index,
+                    rd,
+                    reference_images,
+                    content_options,
+                    visual_character_names,
+                )))
 
         pending = set(tasks)
         content = {
@@ -291,6 +345,7 @@ class FirstFrameImageGenerator(Generator):
             first_frame_description: FirstFrameDescription,
             reference_images: List[str],
             content_options: Dict,
+            visual_character_names: Optional[List[str]] = None,
     ):
         started_at = time.perf_counter()
         local_assets = []
@@ -302,6 +357,7 @@ class FirstFrameImageGenerator(Generator):
                     reference_images,
                     bool(self.phase_finder.get_background_reference().get("url")),
                     content_options,
+                    visual_character_names,
                 )
             else:
                 reference_instruction = ""
