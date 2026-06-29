@@ -16,6 +16,7 @@ const DEFAULT_RENDERER_URL = process.env.CHAT2CARTOON_RENDERER_URL || 'http://lo
 const DEFAULT_ASSET_ROOT = process.env.CHAT2CARTOON_ASSET_ROOT || path.join(PROJECT_ROOT, 'assets', 'generated');
 
 let mainWindow = null;
+let adminWindow = null;
 let backendProcess = null;
 let backendOrigin = `http://127.0.0.1:${DEFAULT_BACKEND_PORT}`;
 let staticServer = null;
@@ -268,6 +269,56 @@ const getRendererUrl = async () => {
   return DEFAULT_RENDERER_URL;
 };
 
+const withPath = (baseUrl, pathname) => {
+  const url = new URL(baseUrl);
+  url.pathname = pathname;
+  url.search = '';
+  url.hash = '';
+  return url.toString();
+};
+
+const createWindowOpenHandler = () => ({ url }) => {
+  shell.openExternal(url);
+  return { action: 'deny' };
+};
+
+const buildWebPreferences = () => ({
+  preload: path.join(DESKTOP_DIR, 'src', 'preload', 'index.cjs'),
+  contextIsolation: true,
+  nodeIntegration: false,
+  sandbox: false,
+  additionalArguments: [
+    `--chat2cartoon-backend-origin=${backendOrigin}`,
+    `--chat2cartoon-asset-root=${DEFAULT_ASSET_ROOT}`,
+  ],
+});
+
+const openAdminWindow = async () => {
+  const rendererUrl = await getRendererUrl();
+  if (adminWindow && !adminWindow.isDestroyed()) {
+    await adminWindow.loadURL(withPath(rendererUrl, '/admin'));
+    adminWindow.show();
+    adminWindow.focus();
+    return;
+  }
+
+  adminWindow = new BrowserWindow({
+    width: 1280,
+    height: 860,
+    minWidth: 1080,
+    minHeight: 680,
+    title: '后台管理',
+    backgroundColor: '#f5f7fa',
+    parent: mainWindow && !mainWindow.isDestroyed() ? mainWindow : undefined,
+    webPreferences: buildWebPreferences(),
+  });
+  adminWindow.on('closed', () => {
+    adminWindow = null;
+  });
+  adminWindow.webContents.setWindowOpenHandler(createWindowOpenHandler());
+  await adminWindow.loadURL(withPath(rendererUrl, '/admin'));
+};
+
 const createMenu = () => {
   const template = [
     {
@@ -288,6 +339,11 @@ const createMenu = () => {
     {
       label: '视图',
       submenu: [
+        {
+          label: '管理后台',
+          click: () => openAdminWindow(),
+        },
+        { type: 'separator' },
         { role: 'reload', label: '重新加载' },
         { role: 'toggleDevTools', label: '开发者工具' },
         { type: 'separator' },
@@ -324,22 +380,10 @@ const createWindow = async rendererUrl => {
     minHeight: 720,
     title: '历史知识视频生成器',
     backgroundColor: '#f6f7f9',
-    webPreferences: {
-      preload: path.join(DESKTOP_DIR, 'src', 'preload', 'index.cjs'),
-      contextIsolation: true,
-      nodeIntegration: false,
-      sandbox: false,
-      additionalArguments: [
-        `--chat2cartoon-backend-origin=${backendOrigin}`,
-        `--chat2cartoon-asset-root=${DEFAULT_ASSET_ROOT}`,
-      ],
-    },
+    webPreferences: buildWebPreferences(),
   });
 
-  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    shell.openExternal(url);
-    return { action: 'deny' };
-  });
+  mainWindow.webContents.setWindowOpenHandler(createWindowOpenHandler());
 
   await mainWindow.loadURL(rendererUrl);
 };
@@ -421,6 +465,22 @@ const registerIpcHandlers = () => {
   ipcMain.handle('shell:open-logs-folder', async () => {
     ensureDir(logsDir);
     return shell.openPath(logsDir);
+  });
+
+  ipcMain.handle('window:open-admin', async () => {
+    await openAdminWindow();
+    return { ok: true };
+  });
+
+  ipcMain.handle('window:focus-main', async () => {
+    if (!mainWindow || mainWindow.isDestroyed()) {
+      const rendererUrl = await getRendererUrl();
+      await createWindow(rendererUrl);
+    } else {
+      mainWindow.show();
+      mainWindow.focus();
+    }
+    return { ok: true };
   });
 
   ipcMain.handle('download:save-url-as-file', async (_event, url, suggestedName) => {

@@ -26,6 +26,7 @@ import { ReactComponent as IconAiBulb } from '@/images/icon_ai_bulb.svg';
 import { ReactComponent as IconAiEdit } from '@/images/icon_ai_edit.svg';
 import type { Assistant } from '@/types/assistant';
 
+import { rewriteStoryboards } from '../../../../services/rewriteStoryboards';
 import { BotMessageContext } from '../../../../store/BotMessage/context';
 import { RenderedMessagesContext } from '../../../../store/RenderedMessages/context';
 import { RunningPhaseStatus, VideoGeneratorTaskPhase } from '../../../../types';
@@ -60,6 +61,10 @@ const AssistantMessage = (message: AssistantMessageProps) => {
   const [showStoryboardEnglish, setShowStoryboardEnglish] = useState(false);
   const [storyboardEditVisible, setStoryboardEditVisible] = useState(false);
   const [storyboardDraft, setStoryboardDraft] = useState(content);
+  const [storyboardRewriteInstruction, setStoryboardRewriteInstruction] =
+    useState('');
+  const [storyboardRewriteLoading, setStoryboardRewriteLoading] =
+    useState(false);
   // 通过topMessage的finish 来判断是否可以操作
   const topMessage = useContext(BotMessageContext);
   const { assistantInfo, retryMessage, sending } =
@@ -70,6 +75,7 @@ const AssistantMessage = (message: AssistantMessageProps) => {
     runningPhaseStatus,
     updateAutoNext,
     updateConfirmationMessage,
+    userConfirmData,
   } = useContext(RenderedMessagesContext);
   const assistantData = assistantInfo as Assistant & {
     Extra?: VideoGeneratorAssistantExtra;
@@ -116,13 +122,20 @@ const AssistantMessage = (message: AssistantMessageProps) => {
     }
   };
 
-  const validateStoryboardDraft = (value: string) => {
+  const normalizeStoryboardDraft = (value: string) => {
     const draft = value.trim();
     if (!draft) {
-      return '分镜脚本不能为空';
+      return '';
     }
-    if (!draft.includes('phase=StoryBoard')) {
-      return '请保留 phase=StoryBoard 前缀';
+    return draft.startsWith('phase=StoryBoard')
+      ? draft
+      : `phase=StoryBoard\n${draft}`;
+  };
+
+  const validateStoryboardDraft = (value: string) => {
+    const draft = normalizeStoryboardDraft(value);
+    if (!draft) {
+      return '分镜脚本不能为空';
     }
     if (!/分镜\s*1[：:]/.test(draft)) {
       return '请至少保留“分镜1：”结构';
@@ -140,8 +153,39 @@ const AssistantMessage = (message: AssistantMessageProps) => {
   };
 
   const handleOpenStoryboardEditor = () => {
-    setStoryboardDraft(content);
+    setStoryboardDraft(normalizeStoryboardDraft(content));
+    setStoryboardRewriteInstruction('');
     setStoryboardEditVisible(true);
+  };
+
+  const handleRewriteStoryboard = async () => {
+    const errorMessage = validateStoryboardDraft(storyboardDraft);
+    if (errorMessage) {
+      Message.warning(errorMessage);
+      return;
+    }
+
+    const instruction = storyboardRewriteInstruction.trim();
+    if (!instruction) {
+      Message.warning('请输入修改方向');
+      return;
+    }
+
+    setStoryboardRewriteLoading(true);
+    try {
+      const result = await rewriteStoryboards({
+        script: userConfirmData?.[UserConfirmationDataKey.Script],
+        storyboards: normalizeStoryboardDraft(storyboardDraft),
+        instruction,
+        content_options: userConfirmData?.[UserConfirmationDataKey.ContentOptions],
+      });
+      setStoryboardDraft(result.storyboards);
+      Message.success('已生成修改稿，请检查后保存');
+    } catch (error) {
+      Message.error('生成修改稿失败，请稍后重试');
+    } finally {
+      setStoryboardRewriteLoading(false);
+    }
   };
 
   const handleSaveStoryboard = () => {
@@ -150,7 +194,7 @@ const AssistantMessage = (message: AssistantMessageProps) => {
       Message.warning(errorMessage);
       return;
     }
-    const nextContent = storyboardDraft.trim();
+    const nextContent = normalizeStoryboardDraft(storyboardDraft);
     updateAutoNext(false);
     updateConfirmationMessage({
       [UserConfirmationDataKey.StoryBoards]: nextContent,
@@ -265,6 +309,29 @@ const AssistantMessage = (message: AssistantMessageProps) => {
           type="warning"
           content="保存后会更新当前分镜脚本。已生成的角色、画面和视频不会自动删除，但可能需要按需重新生成。"
         />
+        <div className={styles.storyboardRewritePanel}>
+          <div className={styles.storyboardRewriteHeader}>
+            <span className={styles.storyboardRewriteTitle}>
+              {'AI 修改方向'}
+            </span>
+            <Button
+              size="small"
+              type="primary"
+              loading={storyboardRewriteLoading}
+              onClick={handleRewriteStoryboard}
+            >
+              {'生成修改稿'}
+            </Button>
+          </div>
+          <textarea
+            className={styles.storyboardRewriteTextarea}
+            placeholder="例如：减少人物特写，多用地图和文献，整体更像纪录片解说。"
+            value={storyboardRewriteInstruction}
+            onChange={event => {
+              setStoryboardRewriteInstruction(event.target.value);
+            }}
+          />
+        </div>
         <textarea
           className={styles.storyboardTextarea}
           value={storyboardDraft}

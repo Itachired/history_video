@@ -15,6 +15,7 @@ import json
 import logging
 import mimetypes
 import os
+import re
 import sys
 import uuid
 from datetime import datetime, timezone
@@ -28,7 +29,13 @@ _backend_dir = Path(__file__).resolve().parent
 load_dotenv(_backend_dir.parent / ".env")
 load_dotenv(_backend_dir / ".env", override=True)
 
+from app.clients.llm import LLMClient
 from app.clients.tos import TOSClient
+from app.admin import register_admin_routes
+from app.admin.billing_context import reset_billing_context, set_billing_context
+from app.admin.dependencies import get_admin_user_from_token
+from app.admin.repository import repository
+from app.admin.task_tracker import PHASE_TASK_MAP, task_tracker
 from app.constants import (
     API_KEY,
     ARTIFACT_TOS_BUCKET,
@@ -40,12 +47,15 @@ from app.constants import (
     TTS_APP_KEY,
     TTS_BASE_URL,
     VLM_ENDPOINT_ID,
+    MAX_STORY_BOARD_NUMBER,
 )
 from app.generators.factory import GeneratorFactory
 from app.generators.phase import PhaseFinder, get_phase_from_message
+from app.generators.phases.knowledge_style import build_knowledge_style_prompt
 from app.message_utils import get_last_message
 from app.mode import Mode
 from app.services.asset_storage import ASSET_ROOT, AssetStorageService
+from app.services.asset_storage import get_project_id_from_content_options, sanitize_project_id
 
 from fastapi import HTTPException, Query, Request
 from fastapi.responses import FileResponse
@@ -53,6 +63,7 @@ from arkitect.core.component.llm.model import (
     ArkChatCompletionChunk,
     ArkChatRequest,
     ArkChatResponse,
+    ArkMessage,
 )
 from arkitect.core.component.bot import BotServer
 from arkitect.launcher.runner import get_endpoint_config, get_runner
@@ -67,6 +78,8 @@ logging.basicConfig(
 LOGGER = logging.getLogger(__name__)
 
 MAX_REFERENCE_IMAGE_BYTES = 10 * 1024 * 1024
+STORYBOARD_REWRITE_MAX_TEXT_LENGTH = 30000
+STORYBOARD_REWRITE_MAX_INSTRUCTION_LENGTH = 1000
 ALLOWED_REFERENCE_IMAGE_TYPES = {
     "image/jpeg": "jpg",
     "image/png": "png",
@@ -74,6 +87,247 @@ ALLOWED_REFERENCE_IMAGE_TYPES = {
 }
 
 SERVER_STARTED_AT = datetime.now(timezone.utc).isoformat()
+
+
+def _clean_text(value) -> str:
+    return value if isinstance(value, str) else ""
+
+
+def _validate_storyboard_text(storyboards: str):
+    if not storyboards.strip():
+        raise HTTPException(status_code=400, detail="storyboards is required")
+    if len(storyboards) > STORYBOARD_REWRITE_MAX_TEXT_LENGTH:
+        raise HTTPException(status_code=400, detail="storyboards is too long")
+    required_tokens = ["phase=StoryBoard", "角色", "画面", "中文台词", "英文台词"]
+    missing = [token for token in required_tokens if token not in storyboards]
+    if not re.search(r"分镜\s*1[：:]", storyboards):
+        missing.append("分镜1")
+    if missing:
+        raise HTTPException(status_code=400, detail=f"invalid storyboard format, missing: {', '.join(missing)}")
+
+
+def _header_value(headers, name: str) -> str:
+    if not headers:
+        return ""
+    try:
+        value = headers.get(name)
+    except AttributeError:
+        value = None
+    if value:
+        return str(value)
+    lower_name = name.lower()
+    if isinstance(headers, dict):
+        for key, item in headers.items():
+            if str(key).lower() == lower_name:
+                return str(item)
+    return ""
+
+
+def _admin_token_from_any_request(request) -> str:
+    headers = _headers_from_any_request(request)
+    authorization = _header_value(headers, "authorization")
+    if authorization.startswith("Bearer "):
+        return authorization.split(" ", 1)[1].strip()
+    cookie = _header_value(headers, "cookie")
+    if cookie:
+        for part in cookie.split(";"):
+            key, _, value = part.strip().partition("=")
+            if key == "admin_access_token":
+                return value
+    return ""
+
+
+def _headers_from_any_request(request):
+    return (
+        getattr(request, "headers", None)
+        or getattr(request, "Headers", None)
+        or getattr(request, "header", None)
+        or {}
+    )
+
+
+def _current_admin_user_from_chat_request(request) -> Dict:
+    token = _admin_token_from_any_request(request)
+    return get_admin_user_from_token(token) or {}
+
+
+def _current_admin_user_from_fastapi_request(request: Request) -> Dict:
+    authorization = request.headers.get("authorization", "")
+    if authorization.startswith("Bearer "):
+        return get_admin_user_from_token(authorization.split(" ", 1)[1].strip()) or {}
+    token = request.cookies.get("admin_access_token") or ""
+    return get_admin_user_from_token(token) or {}
+
+
+def _org_context_from_headers(headers, user: Dict, content_options: Dict = None) -> Dict:
+    content_options = content_options or {}
+    tenant_id = (
+        _header_value(headers, "x-tenant-id")
+        or content_options.get("tenant_id")
+        or ""
+    )
+    workspace_id = (
+        _header_value(headers, "x-workspace-id")
+        or content_options.get("workspace_id")
+        or ""
+    )
+    return repository.validate_user_workspace(user or {}, tenant_id, workspace_id)
+
+
+def _org_context_from_fastapi_request(request: Request, user: Dict, content_options: Dict = None) -> Dict:
+    return _org_context_from_headers(request.headers, user, content_options)
+
+
+def _org_context_from_chat_request(request, user: Dict, content_options: Dict = None) -> Dict:
+    return _org_context_from_headers(_headers_from_any_request(request), user, content_options)
+
+
+def _ensure_project_owner(project_id: str, user: Dict, tenant_id: str = "", workspace_id: str = ""):
+    safe_project_id = sanitize_project_id(project_id)
+    if not safe_project_id:
+        return
+    existing_project = repository.get_project_record(safe_project_id)
+    storage = AssetStorageService(safe_project_id)
+    manifest = storage.manifest()
+    project = repository.ensure_project_record(
+        safe_project_id,
+        project_dir=str(storage.project_dir),
+        manifest_path=str(storage.manifest_path),
+        created_at=manifest.get("created_at") or "",
+        updated_at=manifest.get("updated_at") or "",
+        owner=user if user else None,
+        created_by=user if user else None,
+        tenant_id=tenant_id,
+        workspace_id=workspace_id,
+    )
+    if user and not existing_project and not project.get("owner_user_id"):
+        repository.assign_project_owner(safe_project_id, int(user["id"]))
+
+
+def _normalize_storyboard_output(text: str) -> str:
+    output = text.strip()
+    if not output.startswith("phase=StoryBoard"):
+        phase_index = output.find("phase=StoryBoard")
+        if phase_index >= 0:
+            output = output[phase_index:].strip()
+        else:
+            output = f"phase=StoryBoard\n{output}"
+    return output
+
+
+def _build_storyboard_rewrite_messages(payload: Dict) -> list:
+    content_options = payload.get("content_options") if isinstance(payload.get("content_options"), dict) else {}
+    content_mode = content_options.get("mode")
+    style_prompt = build_knowledge_style_prompt(content_options) if content_mode == "history_knowledge" else ""
+    system_rules = [
+        "# 角色",
+        "你是短视频分镜脚本修订助手。你需要根据用户的修改方向，对现有 StoryBoard 做定向修订。",
+        "",
+        "# 修订要求",
+        "- 必须返回完整的新分镜脚本，而不是解释、摘要或差异说明。",
+        "- 必须保留 phase=StoryBoard 前缀。",
+        "- 必须保持分镜编号连续。",
+        "- 每个分镜必须包含：角色、画面、中文台词、英文台词。",
+        "- 除非用户明确要求增删分镜，否则尽量保持原分镜数量。",
+        "- 尽量保留用户未要求修改的内容，只按修改方向调整画面、台词、节奏或风格。",
+        "- 分镜数量不超过%d个。" % MAX_STORY_BOARD_NUMBER,
+    ]
+    if content_mode == "history_knowledge":
+        system_rules.extend([
+            "",
+            "# 历史/知识类要求",
+            "- 保持客观、中立、清晰的知识讲解语气，不要改成儿童故事。",
+            "- 角色字段表示画面中实际出现的视觉人物或视觉主体，不表示旁白说话人。",
+            "- 如果用户要求减少人物特写或增强背景信息，应在画面描述中体现地图、文献、建筑、时间线、会议、空间纵深等知识视觉元素。",
+            "- 中文台词和英文台词都要同步修改，保持准确、简洁、克制。",
+        ])
+    if style_prompt:
+        system_rules.extend(["", style_prompt])
+
+    user_content = "\n\n".join([
+        "# 原始文案",
+        _clean_text(payload.get("script")).strip() or "未提供",
+        "# 当前分镜脚本",
+        _clean_text(payload.get("storyboards")).strip(),
+        "# 用户修改方向",
+        _clean_text(payload.get("instruction")).strip(),
+        "# 输出要求",
+        "只输出修改后的完整 StoryBoard 文本，不要输出解释。",
+    ])
+    return [
+        ArkMessage(role="system", content="\n".join(system_rules)),
+        ArkMessage(role="user", content=user_content),
+    ]
+
+
+async def rewrite_storyboards(request: Request):
+    try:
+        payload = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="invalid json payload")
+
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="invalid json payload")
+
+    storyboards = _clean_text(payload.get("storyboards")).strip()
+    instruction = _clean_text(payload.get("instruction")).strip()
+    if not instruction:
+        raise HTTPException(status_code=400, detail="instruction is required")
+    if len(instruction) > STORYBOARD_REWRITE_MAX_INSTRUCTION_LENGTH:
+        raise HTTPException(status_code=400, detail="instruction is too long")
+
+    _validate_storyboard_text(storyboards)
+    messages = _build_storyboard_rewrite_messages({
+        **payload,
+        "storyboards": storyboards,
+        "instruction": instruction,
+    })
+
+    completion = ""
+    content_options = payload.get("content_options") if isinstance(payload.get("content_options"), dict) else {}
+    project_id = get_project_id_from_content_options(content_options)
+    current_user = _current_admin_user_from_fastapi_request(request)
+    org_context = _org_context_from_fastapi_request(request, current_user, content_options)
+    _ensure_project_owner(
+        project_id,
+        current_user,
+        org_context.get("tenant_id") or "",
+        org_context.get("workspace_id") or "",
+    )
+    context_token = set_billing_context({
+        "tenant_id": org_context.get("tenant_id"),
+        "workspace_id": org_context.get("workspace_id"),
+        "user_id": current_user.get("id"),
+        "username": current_user.get("username") or "",
+        "project_id": project_id,
+        "task_id": f"{project_id}:storyboard_rewrite" if project_id else "",
+        "phase": "storyboard_rewrite",
+    })
+    client = LLMClient(LLM_ENDPOINT_ID)
+    try:
+        async for chunk in client.chat_generation(messages):
+            if not chunk.choices:
+                continue
+            completion += chunk.choices[0].delta.content or ""
+    except Exception as exc:
+        LOGGER.exception("failed to rewrite storyboard script")
+        raise HTTPException(status_code=502, detail=f"failed to rewrite storyboards: {exc}")
+    finally:
+        reset_billing_context(context_token)
+
+    if not completion.strip():
+        raise HTTPException(status_code=502, detail="empty rewrite response")
+
+    rewritten = _normalize_storyboard_output(completion)
+    try:
+        _validate_storyboard_text(rewritten)
+    except HTTPException as exc:
+        raise HTTPException(status_code=502, detail=f"invalid rewrite response: {exc.detail}")
+    return {
+        "storyboards": rewritten,
+        "char_count": len(rewritten),
+        "warnings": [],
+    }
 
 
 def _config_present(value: str) -> bool:
@@ -203,9 +457,57 @@ async def main(
     INFO(f"phase: {phase.value}")
 
     generator = GeneratorFactory(phase).get_generator(request, mode)
+    content_options = PhaseFinder(request).get_content_options()
+    project_id = get_project_id_from_content_options(content_options)
+    current_user = _current_admin_user_from_chat_request(request)
+    org_context = _org_context_from_chat_request(request, current_user, content_options)
+    _ensure_project_owner(
+        project_id,
+        current_user,
+        org_context.get("tenant_id") or "",
+        org_context.get("workspace_id") or "",
+    )
+    tracked_phase = PHASE_TASK_MAP.get(phase.value)
+    task = None
+    if tracked_phase:
+        task = task_tracker.ensure_task(
+            project_id,
+            tracked_phase,
+            task_type="generation_phase",
+            status="running",
+            progress=0,
+            input_summary=(last_user_message.content or "")[:500] if isinstance(last_user_message.content, str) else "",
+            creator=current_user,
+            metadata={
+                "phase": phase.value,
+                "mode": mode.value,
+                "content_mode": content_options.get("mode", ""),
+                "tenant_id": org_context.get("tenant_id"),
+                "workspace_id": org_context.get("workspace_id"),
+            },
+        )
 
-    async for chunk in generator.generate():
-        yield chunk
+    context_token = set_billing_context({
+        "tenant_id": org_context.get("tenant_id"),
+        "workspace_id": org_context.get("workspace_id"),
+        "user_id": current_user.get("id"),
+        "username": current_user.get("username") or "",
+        "project_id": project_id,
+        "task_id": task.get("task_id") if task else "",
+        "phase": tracked_phase or phase.value,
+    })
+    try:
+        async for chunk in generator.generate():
+            yield chunk
+    except Exception as exc:
+        if tracked_phase:
+            task_tracker.fail_task(project_id, tracked_phase, str(exc), creator=current_user)
+        raise
+    else:
+        if tracked_phase:
+            task_tracker.finish_task(project_id, tracked_phase, "succeeded", creator=current_user)
+    finally:
+        reset_billing_context(context_token)
 
 
 @bot_wrapper(trace_on=True)
@@ -266,7 +568,8 @@ def _file_response(path: Path, filename: str):
     return response
 
 
-async def get_project_manifest(project_id: str):
+async def get_project_manifest(request: Request, project_id: str):
+    _ensure_project_owner(project_id, _current_admin_user_from_fastapi_request(request))
     storage = AssetStorageService(project_id)
     return storage.manifest()
 
@@ -399,6 +702,8 @@ def _sync_storyboard_video_asset(request: Request, client, storage: AssetStorage
 async def sync_project_storyboard_videos(request: Request, project_id: str):
     from volcenginesdkarkruntime import Ark
 
+    current_user = _current_admin_user_from_fastapi_request(request)
+    _ensure_project_owner(project_id, current_user)
     storage = AssetStorageService(project_id)
     client = Ark(api_key=API_KEY, region="cn-beijing")
     assets = [
@@ -442,6 +747,8 @@ async def get_video_generation_task(
     status = payload.get("status")
     local_asset = None
     if project_id and index >= 0:
+        current_user = _current_admin_user_from_fastapi_request(request)
+        _ensure_project_owner(project_id, current_user)
         storage = AssetStorageService(project_id)
         existing_asset = storage.find_phase_asset("storyboard_videos", index)
         if existing_asset and existing_asset.get("status") == "ready":
@@ -478,6 +785,13 @@ async def get_video_generation_task(
             )
 
     if local_asset:
+        if project_id:
+            task_tracker.attach_asset(
+                project_id,
+                "storyboard_videos",
+                local_asset,
+                creator=_current_admin_user_from_fastapi_request(request),
+            )
         payload["local_asset"] = local_asset
         if local_asset.get("status") == "ready" and local_asset.get("download_url"):
             payload.setdefault("content", {})
@@ -577,6 +891,11 @@ if __name__ == "__main__":
         methods=["GET"],
     )
     server.app.add_api_route(
+        "/v1/storyboards/rewrite",
+        rewrite_storyboards,
+        methods=["POST", "OPTIONS"],
+    )
+    server.app.add_api_route(
         "/v1/desktop/status",
         get_desktop_status,
         methods=["GET"],
@@ -586,4 +905,5 @@ if __name__ == "__main__":
         list_desktop_projects,
         methods=["GET"],
     )
+    register_admin_routes(server.app)
     server.run(app=server.app, port=int(port) if port else 8888)

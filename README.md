@@ -2,7 +2,7 @@
 
 本项目基于原 `Chat2Cartoon` 示例扩展为一个面向历史、科普和知识讲解内容的本地视频生成工作台。当前默认工作流是“历史/知识类视频”，同时保留“儿童睡前故事”模式，支持从主题生成文案或上传现成文案，再逐步生成分镜脚本、角色图、分镜画面、分镜视频、配音和最终成片。
 
-前端运行在 `http://localhost:8080`，后端默认运行在 `http://127.0.0.1:8889`。
+项目同时支持浏览器开发模式和 Electron 桌面客户端。前端开发服务运行在 `http://localhost:8080`，后端默认运行在 `http://127.0.0.1:8889`，Electron 壳会复用这套前后端工作流。
 
 ## 主要功能
 
@@ -14,10 +14,14 @@
 - 角色参考图：用户可额外上传角色参考图，用于约束人物外观、服饰和材质。
 - 参考强度：支持普通、强、严格三档参考图约束，默认使用严格参考。
 - 画面比例：支持 `16:9` 横屏和 `9:16` 竖屏，图片与分镜视频会沿用同一比例。
+- 分镜脚本编辑：分镜脚本生成后可直接打开编辑弹窗修改，保存后同步更新工作流确认数据，并提示后续角色、画面和视频按需重新生成。
+- 分镜英文台词：分镜脚本中的英文台词默认隐藏，可通过“英文台词”开关查看，不影响后续原始数据。
+- 图片预览：角色图和分镜画面支持点击大图预览；分镜画面预览卡使用横向 `16:9` 大卡片，避免横图被压缩成正方形。
 - 配音模式：可选择模型生成分镜配音，也可使用原音频并跳过 TTS 生成。
 - 本地素材保存：角色图、分镜图、分镜视频和成片会保存到项目素材目录，并写入 manifest。
 - 下载入口：故事角色、分镜画面、分镜视频和成片阶段均支持单个素材下载、阶段打包下载；成片阶段支持全部素材打包下载。
 - 分镜视频同步：轮询方舟视频生成任务时会把成功产物同步保存到本地，避免前端进度和本地文件脱节。
+- 桌面客户端：Electron 壳提供本地服务状态、后端重启、素材目录打开、日志目录打开和文件下载能力，浏览器前端仍可独立运行。
 
 ## 工作流
 
@@ -31,7 +35,7 @@
 
 生成阶段
   ├─ 文案
-  ├─ 分镜脚本
+  ├─ 分镜脚本（可编辑确认）
   ├─ 故事角色
   ├─ 分镜画面
   ├─ 分镜视频
@@ -113,6 +117,7 @@ assets/generated/{project_id}/
 | `GET /v1/assets/projects/{project_id}/storyboard-videos/{index}/{task_id}` | 按任务 ID 取回并保存单个分镜视频 |
 | `GET/POST /v1/assets/projects/{project_id}/storyboard-videos/sync` | 同步项目内所有分镜视频任务状态和本地文件 |
 | `GET /v1/video-tasks/{task_id}?project_id={project_id}&index={index}` | 查询方舟视频任务；成功后会同步保存本地视频并返回本地播放地址 |
+| `GET /v1/desktop/status` | Electron 和前端状态面板使用的本地后端状态接口 |
 
 ## 模型与服务
 
@@ -193,6 +198,37 @@ pnpm dev
 http://localhost:8080
 ```
 
+### Electron 桌面客户端
+
+开发阶段先保持后端和前端运行，再启动 Electron：
+
+```bash
+cd desktop
+pnpm install
+pnpm dev
+```
+
+默认情况下，Electron 加载 `http://localhost:8080`，连接 `http://127.0.0.1:8889`。如果后端没有运行，桌面壳会尝试启动 `backend/index.py`。
+
+常用覆盖参数：
+
+```bash
+CHAT2CARTOON_RENDERER_URL=http://localhost:8080 pnpm dev
+CHAT2CARTOON_BACKEND_PORT=8889 pnpm dev
+CHAT2CARTOON_BACKEND_PYTHON=/opt/anaconda3/envs/video-gen1/bin/python pnpm dev
+CHAT2CARTOON_ASSET_ROOT=/Users/me/Movies/chat2cartoon/generated pnpm dev
+```
+
+打包命令：
+
+```bash
+cd desktop
+pnpm pack   # 生成未压缩应用目录，便于本机检查
+pnpm dist   # 使用 electron-builder 生成分发包
+```
+
+> 当前桌面壳会打包前端构建产物和后端源码，但 Python 运行时/模型依赖的完整内置分发仍需后续完善。面向没有 Python 环境的 macOS/Windows 用户分发前，需要补齐 Python runtime、后端依赖和平台签名/公证流程。
+
 ## 目录结构
 
 ```text
@@ -213,6 +249,10 @@ http://localhost:8080
 │   │       └── asset_storage.py   # 本地素材存储、manifest、压缩包
 │   ├── pyproject.toml
 │   └── poetry.lock
+├── desktop/
+│   ├── package.json               # Electron 壳、打包配置
+│   ├── src/main/index.cjs         # 主进程、后端启动、素材/日志打开、下载
+│   └── src/preload/index.cjs      # 暴露给前端的 desktopAPI
 ├── frontend/
 │   ├── src/module/VideoGenerator/ # 视频生成器 UI、状态和媒体卡片
 │   ├── package.json
@@ -240,6 +280,9 @@ rm -rf frontend/dist
 
 - 左侧栏中的文案、参考图和风格选择支持任意顺序设置；当角色图、分镜图、分镜视频或成片已经生成后，视觉相关配置会锁定，避免后续素材风格不一致。
 - 上传的任意参考图都会同时影响角色图和分镜图；角色参考图会额外加强人物外观和服饰一致性。
+- 历史/知识类分镜默认强调背景、建筑、文献、地图和空间信息，角色图用于保持人物一致性，不代表最终画面中人物必须占据主体比例。
+- 分镜脚本编辑只更新当前脚本文本和确认数据，不会自动删除已生成素材；如果脚本内容变化较大，需要按需从角色、首帧描述、分镜画面或视频阶段重新生成。
 - 分镜视频任务是异步任务，前端查询任务状态时会携带 `project_id` 和 `index`，后端成功取回视频后返回本地播放 URL。
 - 视频文件接口对 `.mp4` 等格式使用 `inline` 响应头，支持浏览器内预览播放。
+- Electron 相关能力通过可选的 `window.desktopAPI` 暴露，浏览器前端不会依赖 Electron API，因此 `frontend/pnpm dev` 仍可独立运行。
 - `.gitignore` 已忽略 `.env`、日志、trace、Python 缓存、前端构建产物和本地生成素材。

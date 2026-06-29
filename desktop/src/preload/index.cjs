@@ -27,6 +27,8 @@ contextBridge.exposeInMainWorld('desktopAPI', {
   selectReferenceImage: () => ipcRenderer.invoke('dialog:select-reference-image'),
   openProjectFolder: projectId => ipcRenderer.invoke('shell:open-project-folder', projectId),
   openLogsFolder: () => ipcRenderer.invoke('shell:open-logs-folder'),
+  openAdminWindow: () => ipcRenderer.invoke('window:open-admin'),
+  focusMainWindow: () => ipcRenderer.invoke('window:focus-main'),
   saveUrlAsFile: (url, suggestedName) => ipcRenderer.invoke('download:save-url-as-file', url, suggestedName),
   onBackendStatusChanged: callback => {
     const listener = (_event, status) => {

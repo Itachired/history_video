@@ -44,6 +44,7 @@ interface IProps {
   onSendMessage?: () => void;
   assistant: Assistant;
   url: string;
+  requestHeaders?: Record<string, string>;
 }
 
 interface RawMessage {
@@ -66,7 +67,7 @@ export type UpdateAssistantResponse = (rawMessage: RawMessage) => void;
 
 const searchingText = '正在搜索';
 
-export const ChatWindowV2 = ({ children, onSendMessage, assistant, url }: IProps) => {
+export const ChatWindowV2 = ({ children, onSendMessage, assistant, url, requestHeaders = {} }: IProps) => {
   const [sending, setSending] = useState(false);
   const [messages, setMessages] = useState<(UserMessage | BotMessage)[]>([]);
 
@@ -253,7 +254,14 @@ export const ChatWindowV2 = ({ children, onSendMessage, assistant, url }: IProps
 
     // 发送消息
     try {
-      await sendMessageAndUpdateState(url, body, updateTargetMessage, updateTargetDebugInfo, abortRef.current.signal);
+      await sendMessageAndUpdateState(
+        url,
+        body,
+        updateTargetMessage,
+        updateTargetDebugInfo,
+        abortRef.current.signal,
+        requestHeaders,
+      );
     } catch (error: unknown) {
       // 重置 AbortController
       abortRef?.current.abort('error');

@@ -10,6 +10,7 @@
 logs/
 backend/logs/
 backend/trace_*.log
+backend/data/
 assets/generated/*
 !assets/generated/.gitkeep
 

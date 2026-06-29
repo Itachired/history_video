@@ -54,6 +54,8 @@ interface DesktopAPI {
   selectReferenceImage: () => Promise<DesktopReferenceImage | null>;
   openProjectFolder: (projectId: string) => Promise<string | undefined>;
   openLogsFolder: () => Promise<string | undefined>;
+  openAdminWindow: () => Promise<{ ok: boolean }>;
+  focusMainWindow: () => Promise<{ ok: boolean }>;
   saveUrlAsFile: (
     url: string,
     suggestedName?: string,

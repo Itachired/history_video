@@ -11,6 +11,7 @@
 
 import type { GetVideoGenTaskResponse } from '@/types/video_gen_task';
 import { resolveBackendUrl } from '@/utils/desktopRuntime';
+import { getAdminAuthHeaders } from './admin/authHeaders';
 import axios, { type AxiosRequestConfig } from 'axios';
 
 export interface GetVideoGenTaskParams {
@@ -43,6 +44,7 @@ export const GetVideoGenTask: Request = async params => {
     method: 'GET',
     headers: {
       'Content-Type': 'application/json',
+      ...getAdminAuthHeaders(),
     },
     url,
   };

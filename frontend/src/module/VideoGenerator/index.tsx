@@ -34,6 +34,11 @@ interface Props {
   assistantInfo: Assistant;
   botUrl: string;
   botChatUrl: string;
+  requestHeaders?: Record<string, string>;
+  orgContext?: {
+    tenantId?: string;
+    workspaceId?: string;
+  };
   storeUniqueId: string;
   api: ApiRequest;
   slots: {
@@ -42,8 +47,9 @@ interface Props {
 }
 
 const VideoGenerator = (props: Props) => {
-  const { assistantInfo, botUrl, botChatUrl, storeUniqueId, api, slots } =
+  const { assistantInfo, botUrl, botChatUrl, storeUniqueId, api, slots, orgContext } =
     props;
+  const { requestHeaders = {} } = props;
   const assistant = {
     ...assistantInfo,
     Extra: { ...DEFAULT_EXTRA_INFO, ...assistantInfo.Extra },
@@ -51,11 +57,11 @@ const VideoGenerator = (props: Props) => {
 
   return (
     <InjectContext.Provider value={{ api, slots }}>
-      <ChatWindowV2 assistant={assistant} url={botUrl}>
+      <ChatWindowV2 assistant={assistant} url={botUrl} requestHeaders={requestHeaders}>
         <RenderedMessagesProvider storeUniqueId={storeUniqueId}>
           <WatchAndChatProvider>
             <MachineProvider url={botChatUrl}>
-              <Conversation />
+              <Conversation orgContext={orgContext} />
             </MachineProvider>
           </WatchAndChatProvider>
         </RenderedMessagesProvider>

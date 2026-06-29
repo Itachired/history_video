@@ -1,33 +1,35 @@
 import { resolveBackendUrl } from '@/utils/desktopRuntime';
 import { getAdminAuthHeaders } from '@/services/admin/authHeaders';
 
-export interface StoryboardVideoAsset {
+export interface ProjectAsset {
   asset_id: string;
   phase: string;
   index: number;
   status: string;
-  video_gen_task_id?: string;
-  download_url?: string;
-  relative_path?: string;
   filename?: string;
+  relative_path?: string;
+  source_url?: string;
+  download_url?: string;
+  size?: number;
   message?: string;
-  metadata?: Record<string, unknown>;
+  video_gen_task_id?: string;
+  metadata?: Record<string, any>;
+  updated_at?: string;
 }
 
-export interface SyncStoryboardVideosResponse {
+export interface ProjectManifest {
   project_id: string;
-  assets: StoryboardVideoAsset[];
+  created_at?: string;
+  updated_at?: string;
+  assets: ProjectAsset[];
 }
 
-export const syncStoryboardVideos = async (
+export const getProjectManifest = async (
   projectId: string,
-): Promise<SyncStoryboardVideosResponse> => {
+): Promise<ProjectManifest> => {
   const response = await fetch(
-    resolveBackendUrl(
-      `/v1/assets/projects/${projectId}/storyboard-videos/sync`,
-    ),
+    resolveBackendUrl(`/v1/assets/projects/${projectId}/manifest`),
     {
-      method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         ...getAdminAuthHeaders(),
@@ -36,7 +38,7 @@ export const syncStoryboardVideos = async (
   );
   if (!response.ok) {
     const errorText = await response.text();
-    throw new Error(errorText || 'sync storyboard videos failed');
+    throw new Error(errorText || 'get project manifest failed');
   }
   return response.json();
 };

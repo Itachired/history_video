@@ -11,7 +11,11 @@
 
 import VideoGenerator from '@/module/VideoGenerator';
 import { GetVideoGenTask } from '@/services/getVideoGenTask';
+import { adminLogin, getAdminMe } from '@/services/admin/api';
+import { getAdminAuthHeaders } from '@/services/admin/authHeaders';
+import type { AdminUser } from '@/services/admin/types';
 import { getBackendOrigin, getDesktopAPI } from '@/utils/desktopRuntime';
+import { Button, Form, Input, Message, Spin, Typography } from '@arco-design/web-react';
 import { Helmet } from '@modern-js/runtime/head';
 import { useEffect, useMemo, useState } from 'react';
 import { v4 as uuidV4 } from 'uuid';
@@ -22,14 +26,33 @@ const Index = () => {
   const storeKey =
     localStorage.getItem('ark-interactive-video-store-key') || uuidV4();
   const [backendOrigin, setBackendOrigin] = useState(() => getBackendOrigin());
+  const [currentUser, setCurrentUser] = useState<AdminUser | null>(null);
+  const [authLoading, setAuthLoading] = useState(true);
+  const [loginLoading, setLoginLoading] = useState(false);
+  const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
   const botCompletionUrl = useMemo(
     () => `${backendOrigin}/api/v3/bots/chat/completions`,
     [backendOrigin],
+  );
+  const orgContext = useMemo(
+    () => ({
+      tenantId: currentUser?.default_tenant_id || currentUser?.default_tenant?.tenant_id || '',
+      workspaceId: currentUser?.default_workspace_id || currentUser?.default_workspace?.workspace_id || '',
+    }),
+    [currentUser],
   );
 
   useEffect(() => {
     localStorage.setItem('ark-interactive-video-store-key', storeKey);
   }, [storeKey]);
+
+  useEffect(() => {
+    getAdminMe()
+      .then(result => setCurrentUser(result.user))
+      .catch(() => setCurrentUser(null))
+      .finally(() => setAuthLoading(false));
+  }, []);
 
   useEffect(() => {
     const desktopAPI = getDesktopAPI();
@@ -42,6 +65,69 @@ const Index = () => {
       }
     });
   }, []);
+
+  const handleLogin = async () => {
+    if (!username.trim()) {
+      Message.warning('请输入用户名');
+      return;
+    }
+    if (!password) {
+      Message.warning('请输入密码');
+      return;
+    }
+    setLoginLoading(true);
+    try {
+      const result = await adminLogin(username.trim(), password);
+      setCurrentUser(result.user);
+      Message.success('登录成功');
+    } finally {
+      setLoginLoading(false);
+    }
+  };
+
+  if (authLoading) {
+    return (
+      <div className="app-auth-loading">
+        <Spin />
+      </div>
+    );
+  }
+
+  if (!currentUser) {
+    return (
+      <div className="app-login-page">
+        <div className="app-login-panel">
+          <div>
+            <Typography.Title heading={3}>历史视频生成工具</Typography.Title>
+            <Typography.Text type="secondary">
+              请使用管理员分配的账号登录后创建项目和生成素材。
+            </Typography.Text>
+          </div>
+          <Form layout="vertical">
+            <Form.Item label="用户名">
+              <Input
+                autoComplete="username"
+                value={username}
+                onChange={setUsername}
+                onPressEnter={handleLogin}
+              />
+            </Form.Item>
+            <Form.Item label="密码">
+              <Input.Password
+                autoComplete="current-password"
+                value={password}
+                onChange={setPassword}
+                onPressEnter={handleLogin}
+              />
+            </Form.Item>
+            <Button long type="primary" loading={loginLoading} onClick={handleLogin}>
+              登录
+            </Button>
+          </Form>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div>
@@ -71,6 +157,8 @@ const Index = () => {
             }}
             botUrl={botCompletionUrl}
             botChatUrl={botCompletionUrl}
+            requestHeaders={getAdminAuthHeaders(orgContext)}
+            orgContext={orgContext}
             storeUniqueId={storeKey}
             api={{
               GetVideoGenTask: GetVideoGenTask,

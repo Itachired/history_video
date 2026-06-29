@@ -9,14 +9,15 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-import { useContext, useMemo, useRef, useState } from 'react';
+import { useContext, useEffect, useMemo, useRef, useState } from 'react';
 
-import { Button, Message, Modal, Radio } from '@arco-design/web-react';
+import { Button, Message, Modal, Popover, Radio } from '@arco-design/web-react';
 import {
   IconDelete,
   IconFile,
   IconFolder,
   IconImage,
+  IconRefresh,
   IconUpload,
 } from '@arco-design/web-react/icon';
 
@@ -28,7 +29,14 @@ import museumPreview from '@/images/assets/knowledge-style-museum.svg';
 import { IconClean } from '@/images/iconBox';
 import { WatchAndChat } from '@/module/WatchAndChat';
 import { useStartChatWithVideo } from '@/module/WatchAndChat/providers/WatchAndChatProvider/hooks/useStartChatWithVideo';
-import { getDesktopAPI } from '@/utils/desktopRuntime';
+import {
+  getDesktopProjects,
+  type DesktopProjectSummary,
+  type DesktopProjectsResponse,
+} from '@/module/VideoGenerator/services/desktopStatus';
+import { syncStoryboardVideos } from '@/module/VideoGenerator/utils/syncStoryboardVideos';
+import { getDesktopAPI, resolveBackendUrl } from '@/utils/desktopRuntime';
+import { formatLocalDateTime } from '@/utils/time';
 
 import { useScrollToBottom } from '../../hooks/useScrollToBottom';
 import { InjectContext } from '../../store/Inject/context';
@@ -37,6 +45,7 @@ import {
   AspectRatio,
   BackgroundReferenceStrength,
   ContentMode,
+  FlowPhase,
   KnowledgeStyle,
   type ReferenceImage,
   RunningPhaseStatus,
@@ -46,6 +55,7 @@ import {
   VideoGeneratorTaskPhase,
 } from '../../types';
 import { uploadReferenceImage } from '../../utils/uploadReferenceImage';
+import { getProjectManifest, type ProjectAsset } from '../../utils/projectManifest';
 import ChatArea from '../ChatArea';
 import { DesktopStatusPanel } from './components/DesktopStatusPanel';
 import { MessageInput } from './components/MessageInput';
@@ -118,36 +128,106 @@ const ASPECT_RATIO_OPTIONS = [
   },
 ];
 
-const WORKFLOW_STEPS = [
+type WorkflowStep = {
+  label: string;
+  phase: VideoGeneratorTaskPhase;
+  statusPhases?: VideoGeneratorTaskPhase[];
+  retryPhase?: VideoGeneratorTaskPhase;
+  tab: WorkspaceTab;
+  anchorId?: string;
+};
+
+type WorkspaceTab = 'chat' | 'script' | 'storyboard' | 'media' | 'film';
+type AppSection = 'workspace' | 'projects' | 'assets';
+
+const APP_SECTIONS: { label: string; value: AppSection; description: string }[] = [
+  { label: '工作台', value: 'workspace', description: '当前视频生产现场' },
+  { label: '项目', value: 'projects', description: '最近项目和状态' },
+  { label: '资产', value: 'assets', description: '当前项目素材' },
+];
+
+const WORKFLOW_STEPS: WorkflowStep[] = [
   {
     label: '文案',
     phase: VideoGeneratorTaskPhase.PhaseScript,
+    tab: 'script',
   },
   {
     label: '分镜脚本',
     phase: VideoGeneratorTaskPhase.PhaseStoryBoard,
+    tab: 'storyboard',
   },
   {
     label: '角色',
     phase: VideoGeneratorTaskPhase.PhaseRoleImage,
+    statusPhases: [
+      VideoGeneratorTaskPhase.PhaseRoleDescription,
+      VideoGeneratorTaskPhase.PhaseRoleImage,
+    ],
+    retryPhase: VideoGeneratorTaskPhase.PhaseRoleDescription,
+    tab: 'media',
+    anchorId: FlowPhase.GenerateRole,
   },
   {
     label: '分镜画面',
     phase: VideoGeneratorTaskPhase.PhaseFirstFrameImage,
+    statusPhases: [
+      VideoGeneratorTaskPhase.PhaseFirstFrameDescription,
+      VideoGeneratorTaskPhase.PhaseFirstFrameImage,
+    ],
+    retryPhase: VideoGeneratorTaskPhase.PhaseFirstFrameDescription,
+    tab: 'media',
+    anchorId: FlowPhase.GenerateStoryBoardImage,
   },
   {
     label: '视频片段',
     phase: VideoGeneratorTaskPhase.PhaseVideo,
+    statusPhases: [
+      VideoGeneratorTaskPhase.PhaseVideoDescription,
+      VideoGeneratorTaskPhase.PhaseVideo,
+    ],
+    retryPhase: VideoGeneratorTaskPhase.PhaseVideoDescription,
+    tab: 'media',
+    anchorId: FlowPhase.GenerateStoryBoardVideo,
   },
   {
     label: '配音',
     phase: VideoGeneratorTaskPhase.PhaseAudio,
+    statusPhases: [
+      VideoGeneratorTaskPhase.PhaseTone,
+      VideoGeneratorTaskPhase.PhaseAudio,
+    ],
+    retryPhase: VideoGeneratorTaskPhase.PhaseTone,
+    tab: 'media',
+    anchorId: FlowPhase.GenerateStoryBoardAudio,
   },
   {
     label: '成片',
     phase: VideoGeneratorTaskPhase.PhaseFilm,
+    retryPhase: VideoGeneratorTaskPhase.PhaseFilm,
+    tab: 'film',
+    anchorId: FlowPhase.Result,
   },
 ];
+
+const WORKSPACE_TABS: { label: string; value: WorkspaceTab }[] = [
+  { label: '对话', value: 'chat' },
+  { label: '文案', value: 'script' },
+  { label: '分镜', value: 'storyboard' },
+  { label: '画面', value: 'media' },
+  { label: '成片', value: 'film' },
+];
+
+const WORKFLOW_ORDER = Object.values(VideoGeneratorTaskPhase);
+
+const ASSET_PHASE_LABELS: Record<string, string> = {
+  reference_images: '参考图',
+  role_images: '角色图',
+  storyboard_images: '分镜画面',
+  storyboard_videos: '分镜视频',
+  audios: '配音',
+  film: '成片',
+};
 
 type ContentOptionsOverrides = {
   contentMode?: ContentMode;
@@ -171,12 +251,19 @@ type ReferenceImageInput =
 const getReferenceImageName = (file: ReferenceImageInput) =>
   file instanceof File ? file.name : file.fileName;
 
+interface ConversationProps {
+  orgContext?: {
+    tenantId?: string;
+    workspaceId?: string;
+  };
+}
+
 const getReferenceImageType = (file: ReferenceImageInput) =>
   file instanceof File ? file.type : file.mimeType;
 
 const getReferenceImageSize = (file: ReferenceImageInput) => file.size;
 
-const Conversation = () => {
+const Conversation = ({ orgContext }: ConversationProps) => {
   const { slots } = useContext(InjectContext);
   const { LimitIndicator } = slots;
   const {
@@ -198,6 +285,7 @@ const Conversation = () => {
     resetMessages,
     updateConfirmationMessage,
     proceedNextPhase,
+    retryFromPhase,
     userConfirmData,
   } = useContext(RenderedMessagesContext);
   const scriptFileInputRef = useRef<HTMLInputElement>(null);
@@ -222,6 +310,26 @@ const Conversation = () => {
   const [roleUploading, setRoleUploading] = useState(false);
   const [activeScriptFileName, setActiveScriptFileName] = useState('');
   const [activeScriptTextLength, setActiveScriptTextLength] = useState(0);
+  const [activeWorkspaceTab, setActiveWorkspaceTab] =
+    useState<WorkspaceTab>('chat');
+  const [activeAppSection, setActiveAppSection] =
+    useState<AppSection>('workspace');
+  const [readyFilmAsset, setReadyFilmAsset] = useState<ProjectAsset>();
+  const [desktopProjects, setDesktopProjects] =
+    useState<DesktopProjectsResponse>();
+  const [currentManifest, setCurrentManifest] = useState<{
+    project_id: string;
+    assets: ProjectAsset[];
+    created_at?: string;
+    updated_at?: string;
+  }>();
+  const [hubLoading, setHubLoading] = useState(false);
+  const [hubError, setHubError] = useState('');
+  const [hubRefreshKey, setHubRefreshKey] = useState(0);
+  const manifestProjectId =
+    userConfirmData?.[UserConfirmationDataKey.ContentOptions]?.project_id;
+  const effectiveProjectId =
+    manifestProjectId || projectId;
 
   const placeholderInfoShow = usePlaceholderInfo({ assistant: assistantInfo });
 
@@ -259,6 +367,211 @@ const Conversation = () => {
   const { scrollRef: chatMessageListRef, setAutoScroll } = useScrollToBottom(
     !autoNext,
   );
+
+  const normalizePhaseText = (value?: string, phase?: VideoGeneratorTaskPhase) => {
+    const text = value?.trim() || '';
+    if (!phase || !text) {
+      return text;
+    }
+    return text.startsWith(`phase=${phase}`)
+      ? text.replace(new RegExp(`^phase=${phase}\\s*`), '').trim()
+      : text;
+  };
+
+  const countStoryboards = (value?: string) => {
+    const matches = normalizePhaseText(value, VideoGeneratorTaskPhase.PhaseStoryBoard).match(/分镜\s*\d+[：:]/g);
+    return matches?.length || 0;
+  };
+
+  const countReadyMedia = (items?: Record<string, any>[]) =>
+    items?.filter(item => {
+      if (item?.url || item?.download_url || item?.video_url || item?.video_gen_task_id) {
+        return true;
+      }
+      if (item?.images?.some((url: string) => Boolean(url))) {
+        return true;
+      }
+      return item?.local_assets?.some((asset: Record<string, any>) => asset.status === 'ready');
+    }).length || 0;
+
+  const isOriginalVoiceMode =
+    userConfirmData?.[UserConfirmationDataKey.VoiceOptions]?.mode === 'original' ||
+    userConfirmData?.[UserConfirmationDataKey.Film]?.local_assets?.[0]?.metadata?.voice_mode === 'original' ||
+    readyFilmAsset?.metadata?.voice_mode === 'original';
+  const hasReadyFilm =
+    Boolean(userConfirmData?.[UserConfirmationDataKey.Film]?.url) ||
+    Boolean(userConfirmData?.[UserConfirmationDataKey.Film]?.download_url) ||
+    userConfirmData?.[UserConfirmationDataKey.Film]?.local_assets?.some(
+      (asset: Record<string, any>) => asset.status === 'ready',
+    ) ||
+    readyFilmAsset?.status === 'ready';
+
+  const currentProjectAssets = currentManifest?.assets || [];
+  const readyAssetCount = currentProjectAssets.filter(
+    asset => asset.status === 'ready',
+  ).length;
+  const failedAssetCount = currentProjectAssets.filter(
+    asset => asset.status === 'failed',
+  ).length;
+  const assetGroups = currentProjectAssets.reduce<Record<string, ProjectAsset[]>>(
+    (groups, asset) => {
+      const phase = asset.phase || 'unknown';
+      groups[phase] = groups[phase] || [];
+      groups[phase].push(asset);
+      return groups;
+    },
+    {},
+  );
+
+  const getPhaseItemCount = (phase: VideoGeneratorTaskPhase) => {
+    switch (phase) {
+      case VideoGeneratorTaskPhase.PhaseScript:
+        return userConfirmData?.[UserConfirmationDataKey.Script]?.trim()
+          ? {
+              ready: 1,
+              total: 1,
+              detail: `${userConfirmData[UserConfirmationDataKey.Script]?.trim().length || 0} 字`,
+            }
+          : { ready: 0, total: 1, detail: '未导入' };
+      case VideoGeneratorTaskPhase.PhaseStoryBoard: {
+        const total = countStoryboards(userConfirmData?.[UserConfirmationDataKey.StoryBoards]);
+        return {
+          ready: total,
+          total,
+          detail: total ? `${total} 条分镜` : '未生成',
+        };
+      }
+      case VideoGeneratorTaskPhase.PhaseRoleImage: {
+        const total =
+          userConfirmData?.[UserConfirmationDataKey.RoleDescriptions]?.match(/角色\s*\d+[：:]/g)?.length ||
+          userConfirmData?.[UserConfirmationDataKey.RoleImage]?.length ||
+          0;
+        const ready = countReadyMedia(userConfirmData?.[UserConfirmationDataKey.RoleImage]);
+        return {
+          ready,
+          total,
+          detail: total ? `${ready}/${total} 个角色` : '未生成',
+        };
+      }
+      case VideoGeneratorTaskPhase.PhaseFirstFrameImage: {
+        const total =
+          countStoryboards(userConfirmData?.[UserConfirmationDataKey.StoryBoards]) ||
+          userConfirmData?.[UserConfirmationDataKey.FirstFrameImages]?.length ||
+          0;
+        const ready = countReadyMedia(userConfirmData?.[UserConfirmationDataKey.FirstFrameImages]);
+        return {
+          ready,
+          total,
+          detail: total ? `${ready}/${total} 张画面` : '未生成',
+        };
+      }
+      case VideoGeneratorTaskPhase.PhaseVideo: {
+        const total =
+          countStoryboards(userConfirmData?.[UserConfirmationDataKey.StoryBoards]) ||
+          userConfirmData?.[UserConfirmationDataKey.Videos]?.length ||
+          0;
+        const ready = countReadyMedia(userConfirmData?.[UserConfirmationDataKey.Videos]);
+        return {
+          ready,
+          total,
+          detail: total ? `${ready}/${total} 段视频` : '未生成',
+        };
+      }
+      case VideoGeneratorTaskPhase.PhaseAudio: {
+        if (isOriginalVoiceMode) {
+          return { ready: 1, total: 1, detail: '使用原音频' };
+        }
+        const total =
+          countStoryboards(userConfirmData?.[UserConfirmationDataKey.StoryBoards]) ||
+          userConfirmData?.[UserConfirmationDataKey.Audios]?.length ||
+          0;
+        const ready = countReadyMedia(userConfirmData?.[UserConfirmationDataKey.Audios]);
+        return {
+          ready,
+          total,
+          detail: total ? `${ready}/${total} 条配音` : '未生成',
+        };
+      }
+      case VideoGeneratorTaskPhase.PhaseFilm:
+        return hasReadyFilm
+          ? { ready: 1, total: 1, detail: '成片完成' }
+          : { ready: 0, total: 1, detail: '未合成' };
+      default:
+        return { ready: 0, total: 0, detail: '未开始' };
+    }
+  };
+
+  useEffect(() => {
+    if (!manifestProjectId) {
+      setReadyFilmAsset(undefined);
+      return undefined;
+    }
+
+    let stopped = false;
+    const loadReadyFilm = async () => {
+      try {
+        const manifest = await getProjectManifest(manifestProjectId);
+        if (stopped) {
+          return;
+        }
+        const filmAsset = manifest.assets
+          ?.filter(asset => asset.phase === 'film' && asset.status === 'ready')
+          .sort((a, b) => (b.updated_at || '').localeCompare(a.updated_at || ''))[0];
+        setReadyFilmAsset(filmAsset);
+      } catch {
+        if (!stopped) {
+          setReadyFilmAsset(undefined);
+        }
+      }
+    };
+
+    loadReadyFilm();
+    const timer = window.setInterval(loadReadyFilm, 3000);
+    return () => {
+      stopped = true;
+      window.clearInterval(timer);
+    };
+  }, [manifestProjectId]);
+
+  useEffect(() => {
+    if (!['projects', 'assets'].includes(activeAppSection)) {
+      return undefined;
+    }
+
+    let stopped = false;
+    const loadHubData = async () => {
+      setHubLoading(true);
+      setHubError('');
+      try {
+        const [nextProjects, nextManifest] = await Promise.all([
+          getDesktopProjects(50),
+          activeAppSection === 'assets'
+            ? getProjectManifest(effectiveProjectId)
+            : Promise.resolve(undefined),
+        ]);
+        if (stopped) {
+          return;
+        }
+        setDesktopProjects(nextProjects);
+        if (nextManifest) {
+          setCurrentManifest(nextManifest);
+        }
+      } catch (error) {
+        if (!stopped) {
+          setHubError(error instanceof Error ? error.message : String(error));
+        }
+      } finally {
+        if (!stopped) {
+          setHubLoading(false);
+        }
+      }
+    };
+
+    loadHubData();
+    return () => {
+      stopped = true;
+    };
+  }, [activeAppSection, effectiveProjectId, hubRefreshKey]);
 
   const handleScroll = (e: HTMLElement) => {
     if (autoNext) {
@@ -565,6 +878,8 @@ const Conversation = () => {
     if (nextContentMode !== ContentMode.HistoryKnowledge) {
       return {
         project_id: projectId,
+        ...(orgContext?.tenantId ? { tenant_id: orgContext.tenantId } : {}),
+        ...(orgContext?.workspaceId ? { workspace_id: orgContext.workspaceId } : {}),
         mode: nextContentMode,
         aspect_ratio: nextAspectRatio,
       };
@@ -573,6 +888,8 @@ const Conversation = () => {
     const trimmedStylePrompt = nextKnowledgeStylePrompt.trim();
     return {
       project_id: projectId,
+      ...(orgContext?.tenantId ? { tenant_id: orgContext.tenantId } : {}),
+      ...(orgContext?.workspaceId ? { workspace_id: orgContext.workspaceId } : {}),
       mode: nextContentMode,
       style: nextKnowledgeStyle,
       aspect_ratio: nextAspectRatio,
@@ -682,6 +999,55 @@ const Conversation = () => {
     }
   };
 
+  const handleOpenProjectFolderById = async (targetProjectId: string) => {
+    const desktopAPI = getDesktopAPI();
+    if (!desktopAPI) {
+      Message.info('浏览器模式下请在项目 assets/generated 目录查看素材');
+      return;
+    }
+    try {
+      await desktopAPI.openProjectFolder(targetProjectId);
+    } catch {
+      Message.error('打开素材目录失败');
+    }
+  };
+
+  const handleSyncProjectAssets = async (targetProjectId: string) => {
+    setHubLoading(true);
+    try {
+      await syncStoryboardVideos(targetProjectId);
+      Message.success('分镜视频同步完成');
+      setHubRefreshKey(key => key + 1);
+    } catch {
+      Message.error('分镜视频同步失败，请查看后端日志');
+    } finally {
+      setHubLoading(false);
+    }
+  };
+
+  const formatHubTime = (value?: string) =>
+    formatLocalDateTime(value, '未知');
+
+  const getProjectStatusText = (project: DesktopProjectSummary) => {
+    if (project.status === 'manifest_error') {
+      return 'manifest 异常';
+    }
+    if (project.film_ready) {
+      return '成片完成';
+    }
+    if (project.asset_count > 0) {
+      return '生成中/待处理';
+    }
+    return '未开始';
+  };
+
+  const getProjectSummaryText = (project: DesktopProjectSummary) => {
+    const roleReady = project.phase_counts.role_images?.ready || 0;
+    const imageReady = project.phase_counts.storyboard_images?.ready || 0;
+    const videoReady = project.phase_counts.storyboard_videos?.ready || 0;
+    return `素材 ${project.ready_asset_count || 0}/${project.asset_count || 0}，角色 ${roleReady}，画面 ${imageReady}，视频 ${videoReady}`;
+  };
+
   const handleContentModeChange = (value: ContentMode) => {
     setContentMode(value);
     syncContentOptions({ contentMode: value });
@@ -719,22 +1085,62 @@ const Conversation = () => {
     syncContentOptions({ roleReference: undefined });
   };
 
-  const getStepStatus = (phase: VideoGeneratorTaskPhase) => {
-    const finishedIndex = WORKFLOW_STEPS.findIndex(
-      item => item.phase === finishPhase,
-    );
-    const stepIndex = WORKFLOW_STEPS.findIndex(item => item.phase === phase);
+  const getStepStatus = (step: WorkflowStep) => {
+    const statusPhases = step.statusPhases ?? [step.phase];
+    if (statusPhases.includes(runningPhase as VideoGeneratorTaskPhase) && runningPhaseStatus === RunningPhaseStatus.Pending) {
+      return '生成中';
+    }
+    if (statusPhases.includes(runningPhase as VideoGeneratorTaskPhase) && runningPhaseStatus === RunningPhaseStatus.RequestError) {
+      return '失败';
+    }
+
+    const finishedIndex = WORKFLOW_ORDER.findIndex(item => item === finishPhase);
+    const stepIndex = Math.max(...statusPhases.map(phase => WORKFLOW_ORDER.findIndex(item => item === phase)));
 
     if (finishedIndex >= stepIndex && finishedIndex !== -1) {
-      return '完成';
+      const count = getPhaseItemCount(step.phase);
+      if (count.total > 0 && count.ready > 0 && count.ready < count.total) {
+        return '部分完成';
+      }
+      return count.ready > 0 || step.phase === VideoGeneratorTaskPhase.PhaseStoryBoard ? '完成' : '已处理';
     }
-    if (sending && stepIndex === finishedIndex + 1) {
+    if ((sending || runningPhaseStatus === RunningPhaseStatus.Pending) && stepIndex === finishedIndex + 1) {
       return '生成中';
     }
     if (stepIndex === finishedIndex + 1) {
       return '待处理';
     }
     return '未开始';
+  };
+
+  const canRetryWorkflowStep = (retryPhase?: VideoGeneratorTaskPhase) => {
+    if (!retryPhase || runningPhaseStatus === RunningPhaseStatus.Pending) {
+      return false;
+    }
+    const finishIndex = WORKFLOW_ORDER.findIndex(item => item === finishPhase);
+    const retryIndex = WORKFLOW_ORDER.findIndex(item => item === retryPhase);
+    return finishIndex >= retryIndex && retryIndex !== -1;
+  };
+
+  const handleWorkflowStepClick = (item: WorkflowStep) => {
+    setActiveWorkspaceTab(item.tab);
+    window.setTimeout(() => {
+      const element = item.anchorId ? document.getElementById(item.anchorId) : undefined;
+      element?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }, 80);
+  };
+
+  const handleWorkflowRetry = (
+    event: { stopPropagation: () => void },
+    retryPhase?: VideoGeneratorTaskPhase,
+  ) => {
+    event.stopPropagation();
+    if (!canRetryWorkflowStep(retryPhase)) {
+      return;
+    }
+    if (retryPhase) {
+      retryFromPhase(retryPhase);
+    }
   };
 
   const renderProjectSettings = () => (
@@ -957,14 +1363,46 @@ const Conversation = () => {
       </div>
       <div className={styles.workflowList}>
         {WORKFLOW_STEPS.map(item => {
-          const status = getStepStatus(item.phase);
+          const status = getStepStatus(item);
+          const count = getPhaseItemCount(item.phase);
+          const retryable = canRetryWorkflowStep(item.retryPhase);
           return (
-            <div key={item.phase} className={styles.workflowItem}>
+            <div
+              key={item.phase}
+              role="button"
+              tabIndex={0}
+              className={styles.workflowItem}
+              data-active={activeWorkspaceTab === item.tab}
+              onClick={() => handleWorkflowStepClick(item)}
+              onKeyDown={event => {
+                if (event.key === 'Enter' || event.key === ' ') {
+                  event.preventDefault();
+                  handleWorkflowStepClick(item);
+                }
+              }}
+            >
               <div className={styles.workflowDot} data-status={status} />
               <div className={styles.workflowContent}>
-                <div className={styles.workflowLabel}>{item.label}</div>
-                <div className={styles.workflowStatus}>{status}</div>
+                <div className={styles.workflowItemTop}>
+                  <div className={styles.workflowLabel}>{item.label}</div>
+                  <div className={styles.workflowStatus} data-status={status}>
+                    {status}
+                  </div>
+                </div>
+                <div className={styles.workflowMeta}>{count.detail}</div>
               </div>
+              {item.retryPhase ? (
+                <Popover content={retryable ? '从本阶段重新生成' : '当前阶段暂不可重试'}>
+                  <Button
+                    size="mini"
+                    type="text"
+                    icon={<IconRefresh />}
+                    disabled={!retryable}
+                    className={styles.workflowRetryButton}
+                    onClick={event => handleWorkflowRetry(event, item.retryPhase)}
+                  />
+                </Popover>
+              ) : null}
             </div>
           );
         })}
@@ -978,7 +1416,155 @@ const Conversation = () => {
     </aside>
   );
 
-  return (
+  const renderEmptyWorkspace = (title: string, description: string) => (
+    <div className={styles.workspaceEmpty}>
+      <div className={styles.workspaceEmptyTitle}>{title}</div>
+      <div className={styles.workspaceEmptyDesc}>{description}</div>
+    </div>
+  );
+
+  const renderTextWorkspace = (
+    title: string,
+    content?: string,
+    phase?: VideoGeneratorTaskPhase,
+  ) => {
+    const normalizedContent = normalizePhaseText(content, phase);
+    if (!normalizedContent) {
+      return renderEmptyWorkspace(title, '当前阶段还没有生成内容。');
+    }
+    return (
+      <div className={styles.workspaceDetail}>
+        <div className={styles.workspaceDetailHeader}>
+          <div>
+            <div className={styles.workspaceDetailTitle}>{title}</div>
+            <div className={styles.workspaceDetailMeta}>
+              {normalizedContent.length} 字
+            </div>
+          </div>
+        </div>
+        <pre className={styles.workspaceTextBlock}>{normalizedContent}</pre>
+      </div>
+    );
+  };
+
+  const renderChatWorkspace = () => (
+    <>
+      <div
+        className={styles.conversationChatAreaContainer}
+        ref={chatMessageListRef}
+        onScroll={e => handleScroll(e.currentTarget)}
+      >
+        <div className="h-full">
+          <Placeholder {...getPlaceHolderProps()} />
+          <ChatArea messages={renderedMessages} />
+        </div>
+      </div>
+      {!renderedMessages.find(
+        item => item.type === VideoGeneratorMessageType.Multiple,
+      ) &&
+        !isFullScreen && (
+          <div className={styles.conversationInputContainer}>
+            <>
+              {!finishPhase ||
+                ([
+                  VideoGeneratorTaskPhase.PhaseScript,
+                  VideoGeneratorTaskPhase.PhaseStoryBoard,
+                ].includes(finishPhase as VideoGeneratorTaskPhase) && (
+                  <div className={styles.resetBtnWrapper}>
+                    <Button
+                      className={styles.resetBtn}
+                      size="small"
+                      icon={<IconClean />}
+                      onClick={() => {
+                        resetWorkflow();
+                      }}
+                    >
+                      {'清空当前对话'}
+                    </Button>
+                  </div>
+                ))}
+            </>
+            <MessageInput
+              activeSendBtn={true}
+              autoFocus
+              placeholder={'输入修改要求，例如：把画面改成博物馆展陈风格'}
+              canSendMessage={!sending}
+              sendMessage={handleSend}
+              extra={inputValue =>
+                LimitIndicator && <LimitIndicator text={inputValue} />
+              }
+              actions={
+                !showMessageList
+                  ? [
+                      <Button
+                        key="upload-script"
+                        size="mini"
+                        type="text"
+                        icon={<IconUpload />}
+                        disabled={sending}
+                        onClick={event => {
+                          event.stopPropagation();
+                          handleSelectScriptFile();
+                        }}
+                      >
+                        上传文案
+                      </Button>,
+                    ]
+                  : undefined
+              }
+            />
+          </div>
+        )}
+      <WatchAndChat />
+    </>
+  );
+
+  const renderMediaWorkspace = () => {
+    const flowMessage = renderedMessages.find(
+      item => item.type === VideoGeneratorMessageType.Multiple,
+    );
+    if (!flowMessage) {
+      return renderEmptyWorkspace('画面与视频', '角色、分镜画面和视频片段生成后会显示在这里。');
+    }
+    return (
+      <div className={styles.workspaceFlowView}>
+        <ChatArea messages={[flowMessage]} />
+      </div>
+    );
+  };
+
+  const renderFilmWorkspace = () => {
+    if (userConfirmData?.[UserConfirmationDataKey.Film]?.url) {
+      return renderMediaWorkspace();
+    }
+    return renderEmptyWorkspace('成片', '最终视频合成后会显示在这里。');
+  };
+
+  const renderWorkspaceContent = () => {
+    switch (activeWorkspaceTab) {
+      case 'script':
+        return renderTextWorkspace(
+          '文案',
+          userConfirmData?.[UserConfirmationDataKey.Script],
+          VideoGeneratorTaskPhase.PhaseScript,
+        );
+      case 'storyboard':
+        return renderTextWorkspace(
+          '分镜脚本',
+          userConfirmData?.[UserConfirmationDataKey.StoryBoards],
+          VideoGeneratorTaskPhase.PhaseStoryBoard,
+        );
+      case 'media':
+        return renderMediaWorkspace();
+      case 'film':
+        return renderFilmWorkspace();
+      case 'chat':
+      default:
+        return renderChatWorkspace();
+    }
+  };
+
+  const renderWorkspaceSection = () => (
     <div
       className={`${styles.conversationWrapper} ${isFullScreen ? styles.conversationWrapperFullscreen : ''}`}
     >
@@ -994,87 +1580,242 @@ const Conversation = () => {
             </div>
           </div>
           <div className={styles.workspaceTopbarActions}>
-            <DesktopStatusPanel currentProjectId={projectId} />
+            <DesktopStatusPanel currentProjectId={effectiveProjectId} />
             <div className={styles.workspaceTabs}>
-              <button type="button" className={styles.workspaceTabActive}>
-                对话
-              </button>
-              <button type="button">文案</button>
-              <button type="button">分镜</button>
-              <button type="button">画面</button>
-              <button type="button">成片</button>
+              {WORKSPACE_TABS.map(item => (
+                <button
+                  key={item.value}
+                  type="button"
+                  className={
+                    activeWorkspaceTab === item.value
+                      ? styles.workspaceTabActive
+                      : undefined
+                  }
+                  onClick={() => setActiveWorkspaceTab(item.value)}
+                >
+                  {item.label}
+                </button>
+              ))}
             </div>
           </div>
         </div>
-        <div
-          className={styles.conversationChatAreaContainer}
-          ref={chatMessageListRef}
-          onScroll={e => handleScroll(e.currentTarget)}
-        >
-          <div className="h-full">
-            <Placeholder {...getPlaceHolderProps()} />
-            <ChatArea messages={renderedMessages} />
-          </div>
-        </div>
-        {!renderedMessages.find(
-          item => item.type === VideoGeneratorMessageType.Multiple,
-        ) &&
-          !isFullScreen && (
-            <div className={styles.conversationInputContainer}>
-              <>
-                {!finishPhase ||
-                  ([
-                    VideoGeneratorTaskPhase.PhaseScript,
-                    VideoGeneratorTaskPhase.PhaseStoryBoard,
-                  ].includes(finishPhase as VideoGeneratorTaskPhase) && (
-                    <div className={styles.resetBtnWrapper}>
-                      <Button
-                        className={styles.resetBtn}
-                        size="small"
-                        icon={<IconClean />}
-                        onClick={() => {
-                          resetWorkflow();
-                        }}
-                      >
-                        {'清空当前对话'}
-                      </Button>
-                    </div>
-                  ))}
-              </>
-              <MessageInput
-                activeSendBtn={true}
-                autoFocus
-                placeholder={'输入修改要求，例如：把画面改成博物馆展陈风格'}
-                canSendMessage={!sending}
-                sendMessage={handleSend}
-                extra={inputValue =>
-                  LimitIndicator && <LimitIndicator text={inputValue} />
-                }
-                actions={
-                  !showMessageList
-                    ? [
-                        <Button
-                          key="upload-script"
-                          size="mini"
-                          type="text"
-                          icon={<IconUpload />}
-                          disabled={sending}
-                          onClick={event => {
-                            event.stopPropagation();
-                            handleSelectScriptFile();
-                          }}
-                        >
-                          上传文案
-                        </Button>,
-                      ]
-                    : undefined
-                }
-              />
-            </div>
-          )}
-        <WatchAndChat />
+        {renderWorkspaceContent()}
       </div>
       {renderWorkflowSidebar()}
+    </div>
+  );
+
+  const renderHubHeader = (
+    title: string,
+    subtitle: string,
+    action?: React.ReactNode,
+  ) => (
+    <div className={styles.hubHeader}>
+      <div>
+        <div className={styles.hubTitle}>{title}</div>
+        <div className={styles.hubSubtitle}>{subtitle}</div>
+      </div>
+      <div className={styles.hubHeaderActions}>{action}</div>
+    </div>
+  );
+
+  const renderProjectSection = () => (
+    <div className={styles.hubPage}>
+      {renderHubHeader(
+        '项目',
+        '查看最近生成项目、素材数量和成片状态。',
+        <Button loading={hubLoading} onClick={() => setHubRefreshKey(key => key + 1)}>
+          刷新
+        </Button>,
+      )}
+      {hubError ? <div className={styles.hubError}>{hubError}</div> : null}
+      {desktopProjects?.projects.length ? (
+        <div className={styles.projectCards}>
+          {desktopProjects.projects.map(project => {
+            const isCurrent = project.project_id === effectiveProjectId;
+            return (
+              <div
+                key={project.project_id}
+                className={styles.projectCard}
+                data-current={isCurrent}
+              >
+                <div className={styles.projectCardMain}>
+                  <div className={styles.projectCardTitle}>
+                    {project.project_id}
+                  </div>
+                  <div className={styles.projectCardMeta}>
+                    {getProjectSummaryText(project)}
+                  </div>
+                  <div className={styles.projectCardMeta}>
+                    更新于 {formatHubTime(project.updated_at)}
+                  </div>
+                </div>
+                <div className={styles.projectCardStatus}>
+                  {getProjectStatusText(project)}
+                </div>
+                <div className={styles.projectCardActions}>
+                  <Button
+                    size="small"
+                    type={isCurrent ? 'primary' : 'secondary'}
+                    onClick={() => {
+                      if (isCurrent) {
+                        setActiveAppSection('workspace');
+                        return;
+                      }
+                      handleOpenProjectFolderById(project.project_id);
+                    }}
+                  >
+                    {isCurrent ? '继续编辑' : '打开目录'}
+                  </Button>
+                  <Button
+                    size="small"
+                    disabled={!project.storyboard_video_task_count}
+                    loading={hubLoading}
+                    onClick={() => handleSyncProjectAssets(project.project_id)}
+                  >
+                    同步视频
+                  </Button>
+                  <Button
+                    size="small"
+                    href={resolveBackendUrl(
+                      `/v1/assets/projects/${project.project_id}/archive-all`,
+                    )}
+                  >
+                    导出资产
+                  </Button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      ) : (
+        <div className={styles.hubEmpty}>
+          {hubLoading ? '正在读取项目...' : '还没有可读取的项目 manifest。'}
+        </div>
+      )}
+    </div>
+  );
+
+  const renderAssetSection = () => (
+    <div className={styles.hubPage}>
+      {renderHubHeader(
+        '资产',
+        `当前项目：${effectiveProjectId}`,
+        <div className={styles.hubButtonGroup}>
+          <Button loading={hubLoading} onClick={() => setHubRefreshKey(key => key + 1)}>
+            刷新
+          </Button>
+          <Button onClick={() => handleOpenProjectFolderById(effectiveProjectId)}>
+            打开目录
+          </Button>
+          <Button
+            href={resolveBackendUrl(
+              `/v1/assets/projects/${effectiveProjectId}/archive-all`,
+            )}
+          >
+            导出全部
+          </Button>
+        </div>,
+      )}
+      {hubError ? <div className={styles.hubError}>{hubError}</div> : null}
+      <div className={styles.assetSummary}>
+        <div>
+          <span>{currentProjectAssets.length}</span>
+          <label>全部素材</label>
+        </div>
+        <div>
+          <span>{readyAssetCount}</span>
+          <label>已完成</label>
+        </div>
+        <div>
+          <span>{failedAssetCount}</span>
+          <label>失败</label>
+        </div>
+      </div>
+      {currentProjectAssets.length ? (
+        <div className={styles.assetGroups}>
+          {Object.entries(assetGroups).map(([phase, assets]) => (
+            <section key={phase} className={styles.assetGroup}>
+              <div className={styles.assetGroupHeader}>
+                <div className={styles.assetGroupTitle}>
+                  {ASSET_PHASE_LABELS[phase] || phase}
+                </div>
+                <div className={styles.assetGroupMeta}>{assets.length} 项</div>
+              </div>
+              <div className={styles.assetList}>
+                {assets.map(asset => (
+                  <div key={asset.asset_id} className={styles.assetItem}>
+                    <div className={styles.assetItemMain}>
+                      <div className={styles.assetItemTitle}>
+                        {asset.filename || asset.asset_id}
+                      </div>
+                      <div className={styles.assetItemMeta}>
+                        #{asset.index + 1} · {asset.status}
+                        {asset.updated_at
+                          ? ` · ${formatHubTime(asset.updated_at)}`
+                          : ''}
+                      </div>
+                    </div>
+                    <div className={styles.assetItemActions}>
+                      <Button
+                        size="mini"
+                        href={resolveBackendUrl(
+                          `/v1/assets/projects/${effectiveProjectId}/files/${asset.asset_id}`,
+                        )}
+                      >
+                        下载
+                      </Button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </section>
+          ))}
+        </div>
+      ) : (
+        <div className={styles.hubEmpty}>
+          {hubLoading ? '正在读取资产...' : '当前项目还没有归档素材。'}
+        </div>
+      )}
+    </div>
+  );
+
+  return (
+    <div
+      className={`${styles.appShell} ${isFullScreen ? styles.appShellFullscreen : ''}`}
+    >
+      {!isFullScreen ? (
+        <nav className={styles.appNav} aria-label="视频生成入口">
+          <div className={styles.appNavBrand}>历史视频</div>
+          <div className={styles.appNavList}>
+            {APP_SECTIONS.map(item => (
+              <button
+                key={item.value}
+                type="button"
+                className={styles.appNavItem}
+                data-active={activeAppSection === item.value}
+                onClick={() => setActiveAppSection(item.value)}
+              >
+                <span>{item.label}</span>
+                <small>{item.description}</small>
+              </button>
+            ))}
+          </div>
+        </nav>
+      ) : null}
+      <div className={styles.appMain}>
+        <div
+          className={
+            activeAppSection === 'workspace'
+              ? styles.appSectionVisible
+              : styles.appSectionHidden
+          }
+        >
+          {renderWorkspaceSection()}
+        </div>
+        {activeAppSection === 'projects' ? renderProjectSection() : null}
+        {activeAppSection === 'assets' ? renderAssetSection() : null}
+      </div>
       <Modal
         title="上传文案"
         visible={scriptUploadVisible}

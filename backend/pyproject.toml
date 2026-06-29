@@ -15,6 +15,7 @@ arkitect = ">=0.0.1,<0.2.0"
 python-dotenv = "^1.0.1"
 volcengine-python-sdk = "1.0.120"
 volcengine = "1.0.167"
+fastapi = "^0.115.6"
 
 [tool.poetry.group.test]
 optional = true
@@ -60,4 +61,3 @@ markers = [
     "compile: mark placeholder test used to compile integration tests without running them",
 ]
 asyncio_mode = "auto"
-

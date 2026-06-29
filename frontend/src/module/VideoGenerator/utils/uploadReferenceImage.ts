@@ -1,4 +1,5 @@
 import { resolveBackendUrl } from '@/utils/desktopRuntime';
+import { getAdminAuthHeaders } from '@/services/admin/authHeaders';
 
 interface ReferenceImageUploadPayload {
   content_type: string;
@@ -33,6 +34,7 @@ export const uploadReferenceImage = async (
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
+        ...getAdminAuthHeaders(),
       },
       body: JSON.stringify(payload),
     },

@@ -22,6 +22,14 @@ export default defineConfig({
     tailwindcss: tailwindConfig,
     devServer: {
       proxy: {
+        ['/v1']: {
+          target: process.env.CHAT2CARTOON_BACKEND_ORIGIN || 'http://127.0.0.1:8889',
+          changeOrigin: true,
+        },
+        ['/api/v3/bots']: {
+          target: process.env.CHAT2CARTOON_BACKEND_ORIGIN || 'http://127.0.0.1:8889',
+          changeOrigin: true,
+        },
         ['/api/v3/contents/generations/tasks']: {
           target: 'https://ark.cn-beijing.volces.com',
           changeOrigin: true,

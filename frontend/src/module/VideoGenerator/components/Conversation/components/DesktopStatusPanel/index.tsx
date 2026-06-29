@@ -2,6 +2,7 @@ import { Button, Message, Modal } from '@arco-design/web-react';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 
 import { getDesktopAPI } from '@/utils/desktopRuntime';
+import { formatLocalDateTime } from '@/utils/time';
 
 import {
   type DesktopProjectSummary,
@@ -26,14 +27,7 @@ const CAPABILITY_LABELS: Record<string, string> = {
 };
 
 const formatDate = (value?: string) => {
-  if (!value) {
-    return '未知';
-  }
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) {
-    return value;
-  }
-  return date.toLocaleString();
+  return formatLocalDateTime(value, '未知');
 };
 
 const projectSummaryText = (project: DesktopProjectSummary) => {

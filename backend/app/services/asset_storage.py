@@ -132,7 +132,20 @@ class AssetStorageService:
         else:
             assets.append(asset)
         self._write_manifest(manifest)
+        self._track_asset(asset)
         return asset
+
+    def _track_asset(self, asset: Dict[str, Any]):
+        try:
+            from app.admin.task_tracker import task_tracker
+
+            task_tracker.attach_asset(
+                self.project_id,
+                asset.get("phase") or "unknown",
+                asset,
+            )
+        except Exception as e:
+            WARN(f"failed to track asset, project_id={self.project_id}, asset_id={asset.get('asset_id')}, error={e}")
 
     def _build_download_url(self, asset_id: str) -> str:
         return f"/v1/assets/projects/{self.project_id}/files/{asset_id}"

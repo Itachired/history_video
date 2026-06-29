@@ -130,12 +130,14 @@ export const sendMessageAndUpdateState = (
     },
   ) => void,
   abortSignal: AbortSignal,
+  requestHeaders: Record<string, string> = {},
 ): Promise<void> => {
   const eventSource = new BetterEventSource(url, {
     body: JSON.stringify(body),
     headers: {
       'X-Csrf-Token': Cookies.get('csrfToken') || '',
       'Content-Type': 'application/json',
+      ...requestHeaders,
     },
     abortSignal,
   });

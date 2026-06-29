@@ -55,8 +55,9 @@ import FlowItemTitle from '../FlowItemTitle';
 import LoadingFilm from '../LoadingFilm';
 import useFlowPhaseData from './useFlowPhaseData';
 import { uploadReferenceImage } from '../../utils/uploadReferenceImage';
-import { downloadAsset } from '../../utils/downloadAsset';
+import { downloadAsset, resolveAssetUrl } from '../../utils/downloadAsset';
 import { StoryboardVideoAsset, syncStoryboardVideos } from '../../utils/syncStoryboardVideos';
+import { getProjectManifest, type ProjectAsset } from '../../utils/projectManifest';
 
 interface Props {
   messages: ComplexMessage;
@@ -188,6 +189,10 @@ const VideoGenerateFlow = (props: Props) => {
   const isOriginalVoiceMode = voiceMode === VoiceMode.Original;
   const hasGeneratedVideos = Boolean(userConfirmData?.[UserConfirmationDataKey.Videos]?.length);
   const projectId = userConfirmData?.[UserConfirmationDataKey.ContentOptions]?.project_id;
+  const filmDownloadUrl = userConfirmData?.film?.download_url || userConfirmData?.film?.url || '';
+  const filmPlaybackUrl = resolveAssetUrl(
+    getAssetDownloadUrl(userConfirmData?.film, userConfirmData?.film?.url),
+  );
 
   const handleVoiceModeChange = (mode: VoiceMode) => {
     updateConfirmationMessage({
@@ -245,6 +250,57 @@ const VideoGenerateFlow = (props: Props) => {
       });
     }
     return changed;
+  };
+
+  const mergeFilmAsset = (asset?: ProjectAsset) => {
+    if (!asset || asset.status !== 'ready') {
+      return false;
+    }
+    const currentFilm = userConfirmData?.[UserConfirmationDataKey.Film];
+    const currentVoiceOptions = userConfirmData?.[UserConfirmationDataKey.VoiceOptions];
+    const voiceModeFromAsset = asset.metadata?.voice_mode;
+    const nextFilm = {
+      ...currentFilm,
+      url: currentFilm?.url || asset.source_url || asset.download_url,
+      local_assets: [asset],
+      download_url: asset.download_url || currentFilm?.download_url,
+      archive_url: currentFilm?.archive_url || (projectId ? `/v1/assets/projects/${projectId}/archive/film` : undefined),
+      all_assets_archive_url:
+        currentFilm?.all_assets_archive_url || (projectId ? `/v1/assets/projects/${projectId}/archive-all` : undefined),
+    };
+    const nextVoiceOptions =
+      voiceModeFromAsset === VoiceMode.Original
+        ? { ...currentVoiceOptions, mode: VoiceMode.Original }
+        : currentVoiceOptions;
+
+    const prevAsset = currentFilm?.local_assets?.[0];
+    const filmChanged =
+      !currentFilm?.url ||
+      currentFilm.download_url !== nextFilm.download_url ||
+      prevAsset?.status !== asset.status ||
+      prevAsset?.filename !== asset.filename ||
+      prevAsset?.updated_at !== asset.updated_at;
+    const voiceChanged =
+      voiceModeFromAsset === VoiceMode.Original &&
+      currentVoiceOptions?.mode !== VoiceMode.Original;
+
+    if (!filmChanged && !voiceChanged) {
+      return false;
+    }
+
+    updateConfirmationMessage({
+      [UserConfirmationDataKey.Film]: nextFilm,
+      ...(voiceChanged ? { [UserConfirmationDataKey.VoiceOptions]: nextVoiceOptions } : {}),
+    });
+
+    if (
+      runningPhase === VideoGeneratorTaskPhase.PhaseFilm &&
+      runningPhaseStatus !== RunningPhaseStatus.Success
+    ) {
+      updateRunningPhaseStatus(RunningPhaseStatus.Success);
+      updateAutoNext(false);
+    }
+    return true;
   };
 
   const markFirstFrameDescriptionRegenerate = (role: string) => {
@@ -987,7 +1043,7 @@ const VideoGenerateFlow = (props: Props) => {
                     </Radio.Group>
                   </div>
                   {isOriginalVoiceMode ? (
-                    <div className={styles.originalAudioStatus}>使用原音频</div>
+                    <div className={styles.originalAudioStatus}>使用原音频，已跳过 AI 配音</div>
                   ) : generateStoryBoardAudioData.length > 0 ? (
                     <CardScrollList
                       id={FlowPhase.GenerateStoryBoardAudio}
@@ -1142,7 +1198,7 @@ const VideoGenerateFlow = (props: Props) => {
       title: '6.最终视频',
       phase: FlowPhase.Result,
       content: () => {
-        if (!userConfirmData?.film?.url) {
+        if (!filmPlaybackUrl) {
           return null;
         }
 
@@ -1150,13 +1206,13 @@ const VideoGenerateFlow = (props: Props) => {
           <div id={FlowPhase.Result} className={styles.videoChatWrapper}>
             <div className={styles.videoWrapper}>
               <div className={styles.videoBorder}>
-                <VideoPlayer ref={finalFilmPlayerRef} videoLink={userConfirmData?.film?.url || ''} />
+                <VideoPlayer ref={finalFilmPlayerRef} videoLink={filmPlaybackUrl} />
               </div>
             </div>
             <div className={styles.resultActions}>
               <Button
                 icon={<IconDownload />}
-                onClick={() => downloadAsset(userConfirmData?.film?.download_url || userConfirmData?.film?.url)}
+                onClick={() => downloadAsset(filmDownloadUrl)}
               >
                 下载成片
               </Button>
@@ -1172,7 +1228,7 @@ const VideoGenerateFlow = (props: Props) => {
                 onClick={() => {
                   finalFilmPlayerRef.current?.pause();
                   startChatWithVideo({
-                    videoUrl: userConfirmData?.film?.url || '',
+                    videoUrl: filmPlaybackUrl,
                     // userConfirmData?.videos?.at(-1)||'',
                     confirmation: JSON.stringify({
                       [UserConfirmationDataKey.Script]: userConfirmData?.script,
@@ -1241,6 +1297,42 @@ const VideoGenerateFlow = (props: Props) => {
       const asset = item.local_assets?.[0];
       return `${item.index}:${item.video_gen_task_id || ''}:${asset?.status || ''}:${asset?.filename || ''}`;
     }).join('|'),
+  ]);
+
+  useEffect(() => {
+    if (!projectId) {
+      return undefined;
+    }
+
+    let stopped = false;
+    const syncFilmOnce = async () => {
+      try {
+        const manifest = await getProjectManifest(projectId);
+        if (stopped) {
+          return;
+        }
+        const filmAsset = manifest.assets
+          ?.filter(asset => asset.phase === 'film' && asset.status === 'ready')
+          .sort((a, b) => (b.updated_at || '').localeCompare(a.updated_at || ''))[0];
+        mergeFilmAsset(filmAsset);
+      } catch {
+        // Manifest sync is a fallback; streamed film results remain the primary path.
+      }
+    };
+
+    syncFilmOnce();
+    const timer = window.setInterval(syncFilmOnce, 3000);
+    return () => {
+      stopped = true;
+      window.clearInterval(timer);
+    };
+  }, [
+    projectId,
+    runningPhase,
+    runningPhaseStatus,
+    userConfirmData?.[UserConfirmationDataKey.Film]?.download_url,
+    userConfirmData?.[UserConfirmationDataKey.Film]?.local_assets?.[0]?.updated_at,
+    userConfirmData?.[UserConfirmationDataKey.VoiceOptions]?.mode,
   ]);
 
   useEffect(() => {
