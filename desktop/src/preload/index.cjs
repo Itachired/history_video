@@ -23,8 +23,22 @@ contextBridge.exposeInMainWorld('desktopAPI', {
     }
     return status;
   },
+  getConfig: () => ipcRenderer.invoke('config:get'),
+  saveConfig: config => ipcRenderer.invoke('config:save', config),
+  saveConfigAndRestart: async config => {
+    const result = await ipcRenderer.invoke('config:save-and-restart', config);
+    if (result?.backend?.backendOrigin) {
+      runtimeInfo.backendOrigin = result.backend.backendOrigin;
+    }
+    if (result?.config?.runtime?.assetRoot) {
+      runtimeInfo.assetRoot = result.config.runtime.assetRoot;
+    }
+    return result;
+  },
+  testConfig: config => ipcRenderer.invoke('config:test', config),
   selectScriptFile: () => ipcRenderer.invoke('dialog:select-script-file'),
   selectReferenceImage: () => ipcRenderer.invoke('dialog:select-reference-image'),
+  selectAssetRoot: () => ipcRenderer.invoke('dialog:select-asset-root'),
   openProjectFolder: projectId => ipcRenderer.invoke('shell:open-project-folder', projectId),
   openLogsFolder: () => ipcRenderer.invoke('shell:open-logs-folder'),
   openAdminWindow: () => ipcRenderer.invoke('window:open-admin'),

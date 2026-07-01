@@ -12,7 +12,8 @@
 }
 
 .app-auth-loading,
-.app-login-page {
+.app-login-page,
+.app-config-page {
   min-height: 100vh;
   display: flex;
   align-items: center;
@@ -29,6 +30,113 @@
   display: flex;
   flex-direction: column;
   gap: 24px;
+}
+
+.app-config-page {
+  align-items: stretch;
+  justify-content: flex-start;
+  overflow: auto;
+  padding: 24px;
+}
+
+.app-config-panel {
+  width: min(1040px, 100%);
+  margin: 0 auto;
+  padding: 24px;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  background: #fff;
+  box-shadow: 0 12px 32px rgba(22, 32, 42, 0.1);
+}
+
+.app-config-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 18px;
+}
+
+.app-config-warning {
+  max-width: 360px;
+  padding: 10px 12px;
+  border: 1px solid #fecaca;
+  border-radius: 8px;
+  color: #991b1b;
+  font-size: 13px;
+  line-height: 20px;
+  background: #fff7f7;
+}
+
+.app-config-form {
+  display: grid;
+  gap: 16px;
+}
+
+.app-config-section {
+  padding: 16px;
+  border: 1px solid #edf0f3;
+  border-radius: 8px;
+  background: #fbfcfd;
+}
+
+.app-config-section-title {
+  margin-bottom: 12px;
+  color: #111827;
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 22px;
+}
+
+.app-config-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.app-config-result {
+  margin-top: 14px;
+  padding: 10px 12px;
+  border: 1px solid #dbeafe;
+  border-radius: 8px;
+  color: #1d4ed8;
+  font-size: 13px;
+  line-height: 20px;
+  background: #eff6ff;
+}
+
+.app-config-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 18px;
+}
+
+@media (max-width: 860px) {
+  .app-config-page {
+    padding: 12px;
+  }
+
+  .app-config-panel {
+    padding: 16px;
+  }
+
+  .app-config-header {
+    display: grid;
+  }
+
+  .app-config-warning {
+    max-width: none;
+  }
+
+  .app-config-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .app-config-actions {
+    justify-content: flex-start;
+    flex-wrap: wrap;
+  }
 }
 
 @keyframes spin {

@@ -30,6 +30,40 @@ interface DesktopBackendStatus {
   running: boolean;
 }
 
+interface DesktopConfig {
+  masked?: Record<string, string>;
+  runtime: {
+    assetRoot: string;
+    backendPort?: number;
+  };
+  status?: {
+    configured: boolean;
+    missing: string[];
+  };
+  volcengine: {
+    apiKey: string;
+    llmEndpointId: string;
+    imageEndpointId: string;
+    videoEndpointId: string;
+    tosAccessKey: string;
+    tosSecretKey: string;
+    tosBucket: string;
+    ttsAccessKey?: string;
+    ttsAppKey?: string;
+    ttsApiResourceId?: string;
+    ttsBaseUrl?: string;
+    ttsNamespace?: string;
+    ttsSpeaker?: string;
+  };
+}
+
+interface DesktopConfigTestResult {
+  backend: DesktopBackendStatus;
+  checks: Record<string, boolean>;
+  configured: boolean;
+  missing: string[];
+}
+
 interface DesktopScriptFile {
   fileName: string;
   path?: string;
@@ -50,8 +84,15 @@ interface DesktopAPI {
   getRuntimeInfo: () => Promise<DesktopRuntimeInfo>;
   getBackendStatus: () => Promise<DesktopBackendStatus>;
   restartBackend: () => Promise<DesktopBackendStatus>;
+  getConfig: () => Promise<DesktopConfig>;
+  saveConfig: (config: DesktopConfig) => Promise<DesktopConfig>;
+  saveConfigAndRestart: (
+    config: DesktopConfig,
+  ) => Promise<{ backend: DesktopBackendStatus; config: DesktopConfig }>;
+  testConfig: (config?: DesktopConfig) => Promise<DesktopConfigTestResult>;
   selectScriptFile: () => Promise<DesktopScriptFile | null>;
   selectReferenceImage: () => Promise<DesktopReferenceImage | null>;
+  selectAssetRoot: () => Promise<string | null>;
   openProjectFolder: (projectId: string) => Promise<string | undefined>;
   openLogsFolder: () => Promise<string | undefined>;
   openAdminWindow: () => Promise<{ ok: boolean }>;

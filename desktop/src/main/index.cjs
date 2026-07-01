@@ -13,7 +13,7 @@ const FRONTEND_DIST_DIR = path.join(FRONTEND_DIR, 'dist');
 const BACKEND_DIR = path.join(PROJECT_ROOT, 'backend');
 const DEFAULT_BACKEND_PORT = Number(process.env.CHAT2CARTOON_BACKEND_PORT || process.env._FAAS_RUNTIME_PORT || 8889);
 const DEFAULT_RENDERER_URL = process.env.CHAT2CARTOON_RENDERER_URL || 'http://localhost:8080';
-const DEFAULT_ASSET_ROOT = process.env.CHAT2CARTOON_ASSET_ROOT || path.join(PROJECT_ROOT, 'assets', 'generated');
+const DEV_ASSET_ROOT = process.env.CHAT2CARTOON_ASSET_ROOT || path.join(PROJECT_ROOT, 'assets', 'generated');
 
 let mainWindow = null;
 let adminWindow = null;
@@ -22,6 +22,7 @@ let backendOrigin = `http://127.0.0.1:${DEFAULT_BACKEND_PORT}`;
 let staticServer = null;
 let staticServerUrl = '';
 let logsDir = '';
+let configPath = '';
 
 const ensureDir = dir => {
   fs.mkdirSync(dir, { recursive: true });
@@ -40,6 +41,129 @@ const sanitizeProjectId = projectId => {
   const value = String(projectId || '').trim().replace(/[^a-zA-Z0-9_-]/g, '_');
   return value || 'default';
 };
+
+const maskSecret = value => {
+  const text = String(value || '');
+  if (!text) {
+    return '';
+  }
+  if (text.length <= 8) {
+    return '****';
+  }
+  return `${text.slice(0, 4)}****${text.slice(-4)}`;
+};
+
+const getDefaultAssetRoot = () =>
+  app.isPackaged
+    ? path.join(app.getPath('userData'), 'assets', 'generated')
+    : DEV_ASSET_ROOT;
+
+const getDefaultDesktopConfig = () => ({
+  volcengine: {
+    apiKey: process.env.API_KEY || process.env.ARK_API_KEY || '',
+    llmEndpointId: process.env.LLM_ENDPOINT_ID || '',
+    imageEndpointId: process.env.T2V_ENDPOINT_ID || '',
+    videoEndpointId: process.env.CGT_ENDPOINT_ID || '',
+    tosAccessKey: process.env.TOS_ACCESSKEY || '',
+    tosSecretKey: process.env.TOS_SECRETKEY || '',
+    tosBucket: process.env.TOS_BUCKET || '',
+    ttsAccessKey: process.env.TTS_ACCESS_KEY || process.env.TTS_ACCESS_TOKEN || '',
+    ttsAppKey: process.env.TTS_APP_KEY || process.env.TTS_APP_ID || '',
+    ttsApiResourceId: process.env.TTS_API_RESOURCE_ID || 'volc.service_type.10029',
+    ttsBaseUrl: process.env.TTS_BASE_URL || 'wss://openspeech.bytedance.com/api/v3/tts/bidirection',
+    ttsNamespace: process.env.TTS_NAMESPACE || 'BidirectionalTTS',
+    ttsSpeaker: process.env.TTS_SPEAKER || 'zh_female_xiaohe_uranus_bigtts',
+  },
+  runtime: {
+    assetRoot: getDefaultAssetRoot(),
+    backendPort: DEFAULT_BACKEND_PORT,
+  },
+});
+
+const mergeDesktopConfig = config => {
+  const defaults = getDefaultDesktopConfig();
+  const next = {
+    volcengine: {
+      ...defaults.volcengine,
+      ...(config?.volcengine || {}),
+    },
+    runtime: {
+      ...defaults.runtime,
+      ...(config?.runtime || {}),
+    },
+  };
+  next.runtime.assetRoot = next.runtime.assetRoot || defaults.runtime.assetRoot;
+  next.runtime.backendPort = Number(next.runtime.backendPort || DEFAULT_BACKEND_PORT);
+  return next;
+};
+
+const loadDesktopConfig = () => {
+  if (!configPath || !fs.existsSync(configPath)) {
+    return mergeDesktopConfig({});
+  }
+  try {
+    return mergeDesktopConfig(JSON.parse(fs.readFileSync(configPath, 'utf-8')));
+  } catch (error) {
+    writeLogLine(
+      path.join(logsDir || app.getPath('logs'), 'app.log'),
+      `${new Date().toISOString()} failed to read config: ${String(error)}${os.EOL}`,
+    );
+    return mergeDesktopConfig({});
+  }
+};
+
+const saveDesktopConfig = config => {
+  const next = mergeDesktopConfig(config);
+  ensureDir(path.dirname(configPath));
+  fs.writeFileSync(configPath, JSON.stringify(next, null, 2), 'utf-8');
+  ensureDir(next.runtime.assetRoot);
+  return next;
+};
+
+const getConfigMissingFields = config => {
+  const volcengine = config.volcengine || {};
+  const missing = [];
+  const requiredFields = [
+    ['volcengine.apiKey', volcengine.apiKey],
+    ['volcengine.llmEndpointId', volcengine.llmEndpointId],
+    ['volcengine.imageEndpointId', volcengine.imageEndpointId],
+    ['volcengine.videoEndpointId', volcengine.videoEndpointId],
+    ['volcengine.tosAccessKey', volcengine.tosAccessKey],
+    ['volcengine.tosSecretKey', volcengine.tosSecretKey],
+    ['volcengine.tosBucket', volcengine.tosBucket],
+  ];
+  requiredFields.forEach(([key, value]) => {
+    if (!String(value || '').trim()) {
+      missing.push(key);
+    }
+  });
+  return missing;
+};
+
+const getDesktopConfigStatus = config => {
+  const missing = getConfigMissingFields(config);
+  return {
+    configured: missing.length === 0,
+    missing,
+  };
+};
+
+const sanitizeDesktopConfigForRenderer = config => {
+  const status = getDesktopConfigStatus(config);
+  return {
+    ...config,
+    status,
+    masked: {
+      apiKey: maskSecret(config.volcengine.apiKey),
+      tosAccessKey: maskSecret(config.volcengine.tosAccessKey),
+      tosSecretKey: maskSecret(config.volcengine.tosSecretKey),
+      ttsAccessKey: maskSecret(config.volcengine.ttsAccessKey),
+      ttsAppKey: maskSecret(config.volcengine.ttsAppKey),
+    },
+  };
+};
+
+const getAssetRoot = () => loadDesktopConfig().runtime.assetRoot || getDefaultAssetRoot();
 
 const getMimeType = filePath => {
   const ext = path.extname(filePath).toLowerCase();
@@ -64,6 +188,40 @@ const getPythonExecutable = () => {
     return condaPython;
   }
   return process.platform === 'win32' ? 'python' : 'python3';
+};
+
+const getPackagedBackendExecutable = () => {
+  if (!app.isPackaged) {
+    return '';
+  }
+  const executableName =
+    process.platform === 'win32'
+      ? 'chat2cartoon-backend.exe'
+      : 'chat2cartoon-backend';
+  const candidates = [
+    path.join(process.resourcesPath, 'backend-runtime', executableName),
+    path.join(process.resourcesPath, 'backend-runtime', 'dist', 'chat2cartoon-backend', executableName),
+    path.join(process.resourcesPath, 'backend-runtime', 'dist', executableName),
+  ];
+  return candidates.find(candidate => fs.existsSync(candidate)) || '';
+};
+
+const getBackendLaunchConfig = () => {
+  const packagedExecutable = getPackagedBackendExecutable();
+  if (packagedExecutable) {
+    return {
+      command: packagedExecutable,
+      args: [],
+      cwd: ensureDir(path.join(app.getPath('userData'), 'runtime')),
+      mode: 'packaged-runtime',
+    };
+  }
+  return {
+    command: getPythonExecutable(),
+    args: ['index.py'],
+    cwd: app.isPackaged ? path.join(process.resourcesPath, 'backend') : BACKEND_DIR,
+    mode: 'python-source',
+  };
 };
 
 const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -141,27 +299,51 @@ const notifyBackendStatus = status => {
 };
 
 const startBackend = async ({ reuseExisting = true } = {}) => {
-  const preferredOrigin = `http://127.0.0.1:${DEFAULT_BACKEND_PORT}`;
+  const desktopConfig = loadDesktopConfig();
+  const preferredPort = Number(desktopConfig.runtime.backendPort || DEFAULT_BACKEND_PORT);
+  const preferredOrigin = `http://127.0.0.1:${preferredPort}`;
   if (reuseExisting && (await checkDesktopBackend(preferredOrigin))) {
     backendOrigin = preferredOrigin;
     return backendOrigin;
   }
 
-  const port = (await isPortAvailable(DEFAULT_BACKEND_PORT))
-    ? DEFAULT_BACKEND_PORT
-    : await findAvailablePort(DEFAULT_BACKEND_PORT + 1);
+  const port = (await isPortAvailable(preferredPort))
+    ? preferredPort
+    : await findAvailablePort(preferredPort + 1);
   backendOrigin = `http://127.0.0.1:${port}`;
 
-  const python = getPythonExecutable();
+  const launchConfig = getBackendLaunchConfig();
   const backendLog = path.join(logsDir, 'backend.log');
+  const assetRoot = desktopConfig.runtime.assetRoot || getDefaultAssetRoot();
+  ensureDir(assetRoot);
   const env = {
     ...process.env,
     _FAAS_RUNTIME_PORT: String(port),
-    ASSET_ROOT: DEFAULT_ASSET_ROOT,
+    ADMIN_DATABASE_PATH: path.join(app.getPath('userData'), 'admin.db'),
+    ASSET_ROOT: assetRoot,
+    API_KEY: desktopConfig.volcengine.apiKey,
+    ARK_API_KEY: desktopConfig.volcengine.apiKey,
+    LLM_ENDPOINT_ID: desktopConfig.volcengine.llmEndpointId,
+    T2V_ENDPOINT_ID: desktopConfig.volcengine.imageEndpointId,
+    CGT_ENDPOINT_ID: desktopConfig.volcengine.videoEndpointId,
+    TOS_ACCESSKEY: desktopConfig.volcengine.tosAccessKey,
+    TOS_SECRETKEY: desktopConfig.volcengine.tosSecretKey,
+    TOS_BUCKET: desktopConfig.volcengine.tosBucket,
+    TTS_ACCESS_KEY: desktopConfig.volcengine.ttsAccessKey,
+    TTS_APP_KEY: desktopConfig.volcengine.ttsAppKey,
+    TTS_API_RESOURCE_ID: desktopConfig.volcengine.ttsApiResourceId,
+    TTS_BASE_URL: desktopConfig.volcengine.ttsBaseUrl,
+    TTS_NAMESPACE: desktopConfig.volcengine.ttsNamespace,
+    TTS_SPEAKER: desktopConfig.volcengine.ttsSpeaker,
   };
 
-  backendProcess = childProcess.spawn(python, ['index.py'], {
-    cwd: BACKEND_DIR,
+  writeLogLine(
+    backendLog,
+    `${new Date().toISOString()} starting backend mode=${launchConfig.mode} command=${launchConfig.command}${os.EOL}`,
+  );
+
+  backendProcess = childProcess.spawn(launchConfig.command, launchConfig.args, {
+    cwd: launchConfig.cwd,
     env,
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -289,7 +471,7 @@ const buildWebPreferences = () => ({
   sandbox: false,
   additionalArguments: [
     `--chat2cartoon-backend-origin=${backendOrigin}`,
-    `--chat2cartoon-asset-root=${DEFAULT_ASSET_ROOT}`,
+    `--chat2cartoon-asset-root=${getAssetRoot()}`,
   ],
 });
 
@@ -326,7 +508,7 @@ const createMenu = () => {
       submenu: [
         {
           label: '打开素材目录',
-          click: () => shell.openPath(DEFAULT_ASSET_ROOT),
+          click: () => shell.openPath(getAssetRoot()),
         },
         {
           label: '打开日志目录',
@@ -391,7 +573,7 @@ const createWindow = async rendererUrl => {
 const registerIpcHandlers = () => {
   ipcMain.handle('runtime:get-info', () => ({
     appVersion: app.getVersion(),
-    assetRoot: DEFAULT_ASSET_ROOT,
+    assetRoot: getAssetRoot(),
     backendOrigin,
     isPackaged: app.isPackaged,
     platform: process.platform,
@@ -414,6 +596,68 @@ const registerIpcHandlers = () => {
       desktopReady: true,
       running: true,
     };
+  });
+
+  ipcMain.handle('config:get', () =>
+    sanitizeDesktopConfigForRenderer(loadDesktopConfig()));
+
+  ipcMain.handle('config:save', async (_event, config) => {
+    const savedConfig = saveDesktopConfig(config);
+    return sanitizeDesktopConfigForRenderer(savedConfig);
+  });
+
+  ipcMain.handle('config:save-and-restart', async (_event, config) => {
+    const savedConfig = saveDesktopConfig(config);
+    if (backendProcess) {
+      backendProcess.kill();
+      backendProcess = null;
+    }
+    await startBackend({ reuseExisting: false });
+    return {
+      config: sanitizeDesktopConfigForRenderer(savedConfig),
+      backend: {
+        backendOrigin,
+        desktopReady: true,
+        running: true,
+      },
+    };
+  });
+
+  ipcMain.handle('config:test', async (_event, config) => {
+    const nextConfig = mergeDesktopConfig(config || loadDesktopConfig());
+    const status = getDesktopConfigStatus(nextConfig);
+    return {
+      ...status,
+      checks: {
+        apiKey: Boolean(nextConfig.volcengine.apiKey),
+        llmEndpointId: Boolean(nextConfig.volcengine.llmEndpointId),
+        imageEndpointId: Boolean(nextConfig.volcengine.imageEndpointId),
+        videoEndpointId: Boolean(nextConfig.volcengine.videoEndpointId),
+        tos: Boolean(
+          nextConfig.volcengine.tosAccessKey &&
+            nextConfig.volcengine.tosSecretKey &&
+            nextConfig.volcengine.tosBucket,
+        ),
+        tts: Boolean(
+          nextConfig.volcengine.ttsAccessKey && nextConfig.volcengine.ttsAppKey,
+        ),
+      },
+      backend: {
+        backendOrigin,
+        desktopReady: await checkDesktopBackend(backendOrigin),
+        running: await pingBackend(backendOrigin),
+      },
+    };
+  });
+
+  ipcMain.handle('dialog:select-asset-root', async () => {
+    const result = await dialog.showOpenDialog(mainWindow, {
+      properties: ['openDirectory', 'createDirectory'],
+    });
+    if (result.canceled || !result.filePaths[0]) {
+      return null;
+    }
+    return result.filePaths[0];
   });
 
   ipcMain.handle('dialog:select-script-file', async () => {
@@ -457,7 +701,7 @@ const registerIpcHandlers = () => {
   });
 
   ipcMain.handle('shell:open-project-folder', async (_event, projectId) => {
-    const projectDir = path.join(DEFAULT_ASSET_ROOT, sanitizeProjectId(projectId));
+    const projectDir = path.join(getAssetRoot(), sanitizeProjectId(projectId));
     ensureDir(projectDir);
     return shell.openPath(projectDir);
   });
@@ -512,8 +756,9 @@ const registerIpcHandlers = () => {
 
 app.whenReady().then(async () => {
   app.setName('历史知识视频生成器');
+  configPath = path.join(app.getPath('userData'), 'config.json');
   logsDir = ensureDir(path.join(app.getPath('logs'), 'chat2cartoon'));
-  ensureDir(DEFAULT_ASSET_ROOT);
+  ensureDir(getAssetRoot());
   registerIpcHandlers();
   createMenu();
 

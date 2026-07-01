@@ -7,10 +7,13 @@
 
 # Logs, traces, and runtime artifacts
 *.log
+.codex-runtime/
 logs/
 backend/logs/
 backend/trace_*.log
 backend/data/
+backend-runtime/dist/
+.pyinstaller-build/
 assets/generated/*
 !assets/generated/.gitkeep
 

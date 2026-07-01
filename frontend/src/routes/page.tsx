@@ -22,12 +22,63 @@ import { v4 as uuidV4 } from 'uuid';
 
 import './index.css';
 
+const createEmptyDesktopConfig = (): DesktopConfig => ({
+  runtime: {
+    assetRoot: '',
+    backendPort: 8889,
+  },
+  volcengine: {
+    apiKey: '',
+    llmEndpointId: '',
+    imageEndpointId: '',
+    videoEndpointId: '',
+    tosAccessKey: '',
+    tosSecretKey: '',
+    tosBucket: '',
+    ttsAccessKey: '',
+    ttsAppKey: '',
+    ttsApiResourceId: 'volc.service_type.10029',
+    ttsBaseUrl: 'wss://openspeech.bytedance.com/api/v3/tts/bidirection',
+    ttsNamespace: 'BidirectionalTTS',
+    ttsSpeaker: 'zh_female_xiaohe_uranus_bigtts',
+  },
+});
+
+const CONFIG_FIELD_LABELS: Record<string, string> = {
+  'volcengine.apiKey': '火山方舟 API Key',
+  'volcengine.llmEndpointId': '文案/分镜模型 Endpoint ID',
+  'volcengine.imageEndpointId': '图片生成模型 Endpoint ID',
+  'volcengine.videoEndpointId': '视频生成模型 Endpoint ID',
+  'volcengine.tosAccessKey': 'TOS Access Key',
+  'volcengine.tosSecretKey': 'TOS Secret Key',
+  'volcengine.tosBucket': 'TOS Bucket',
+};
+
+const isDesktopConfigReady = (config?: DesktopConfig | null) =>
+  Boolean(config?.status?.configured);
+
+const getDesktopConfigAPI = () => {
+  const desktopAPI = getDesktopAPI();
+  if (!desktopAPI?.getConfig || !desktopAPI?.saveConfigAndRestart) {
+    return undefined;
+  }
+  return desktopAPI;
+};
+
 const Index = () => {
   const storeKey =
     localStorage.getItem('ark-interactive-video-store-key') || uuidV4();
   const [backendOrigin, setBackendOrigin] = useState(() => getBackendOrigin());
   const [currentUser, setCurrentUser] = useState<AdminUser | null>(null);
+  const hasDesktopRuntime = Boolean(getDesktopAPI());
+  const hasDesktopConfigAPI = Boolean(getDesktopConfigAPI());
   const [authLoading, setAuthLoading] = useState(true);
+  const [configLoading, setConfigLoading] = useState(() => hasDesktopConfigAPI);
+  const [desktopConfig, setDesktopConfig] = useState<DesktopConfig | null>(null);
+  const [configSaving, setConfigSaving] = useState(false);
+  const [configTestResult, setConfigTestResult] =
+    useState<DesktopConfigTestResult | null>(null);
+  const [configVisible, setConfigVisible] = useState(false);
   const [loginLoading, setLoginLoading] = useState(false);
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
@@ -48,11 +99,41 @@ const Index = () => {
   }, [storeKey]);
 
   useEffect(() => {
+    const desktopAPI = getDesktopConfigAPI();
+    if (!desktopAPI) {
+      setConfigLoading(false);
+      if (hasDesktopRuntime) {
+        Message.warning('客户端运行时已更新，请重启 Electron 后使用配置页');
+      }
+      return;
+    }
+    desktopAPI
+      .getConfig()
+      .then(config => {
+        setDesktopConfig(config);
+        setConfigVisible(!isDesktopConfigReady(config));
+      })
+      .catch(error => {
+        Message.error(error instanceof Error ? error.message : '读取本地配置失败');
+        setDesktopConfig(createEmptyDesktopConfig());
+      })
+      .finally(() => setConfigLoading(false));
+  }, [hasDesktopRuntime]);
+
+  useEffect(() => {
+    if (hasDesktopConfigAPI && configLoading) {
+      return;
+    }
+    if (hasDesktopConfigAPI && !isDesktopConfigReady(desktopConfig)) {
+      setCurrentUser(null);
+      setAuthLoading(false);
+      return;
+    }
     getAdminMe()
       .then(result => setCurrentUser(result.user))
       .catch(() => setCurrentUser(null))
       .finally(() => setAuthLoading(false));
-  }, []);
+  }, [configLoading, desktopConfig, hasDesktopConfigAPI]);
 
   useEffect(() => {
     const desktopAPI = getDesktopAPI();
@@ -65,6 +146,81 @@ const Index = () => {
       }
     });
   }, []);
+
+  const patchDesktopConfig = (patch: Partial<DesktopConfig>) => {
+    setDesktopConfig(current => ({
+      ...createEmptyDesktopConfig(),
+      ...(current || {}),
+      ...patch,
+      runtime: {
+        ...createEmptyDesktopConfig().runtime,
+        ...(current?.runtime || {}),
+        ...(patch.runtime || {}),
+      },
+      volcengine: {
+        ...createEmptyDesktopConfig().volcengine,
+        ...(current?.volcengine || {}),
+        ...(patch.volcengine || {}),
+      },
+    }));
+  };
+
+  const handleSelectAssetRoot = async () => {
+    const desktopAPI = getDesktopConfigAPI();
+    if (!desktopAPI) {
+      Message.warning('请重启 Electron 后再选择素材目录');
+      return;
+    }
+    const assetRoot = await desktopAPI.selectAssetRoot();
+    if (assetRoot) {
+      patchDesktopConfig({
+        runtime: {
+          ...(desktopConfig?.runtime || createEmptyDesktopConfig().runtime),
+          assetRoot,
+        },
+      });
+    }
+  };
+
+  const handleTestConfig = async () => {
+    const desktopAPI = getDesktopConfigAPI();
+    if (!desktopAPI || !desktopConfig) {
+      Message.warning('请重启 Electron 后再检查配置');
+      return;
+    }
+    setConfigSaving(true);
+    try {
+      const result = await desktopAPI.testConfig(desktopConfig);
+      setConfigTestResult(result);
+      if (result.configured) {
+        Message.success('必填配置已完整');
+      } else {
+        Message.warning('还有必填配置未填写');
+      }
+    } finally {
+      setConfigSaving(false);
+    }
+  };
+
+  const handleSaveConfig = async () => {
+    const desktopAPI = getDesktopConfigAPI();
+    if (!desktopAPI || !desktopConfig) {
+      Message.warning('请重启 Electron 后再保存配置');
+      return;
+    }
+    setConfigSaving(true);
+    try {
+      const result = await desktopAPI.saveConfigAndRestart(desktopConfig);
+      setDesktopConfig(result.config);
+      if (result.backend.backendOrigin) {
+        setBackendOrigin(result.backend.backendOrigin.replace(/\/+$/, ''));
+      }
+      setConfigVisible(!isDesktopConfigReady(result.config));
+      Message.success('配置已保存，后端已重启');
+    } finally {
+      setConfigSaving(false);
+    }
+  };
 
   const handleLogin = async () => {
     if (!username.trim()) {
@@ -91,6 +247,217 @@ const Index = () => {
         <Spin />
       </div>
     );
+  }
+
+  const renderDesktopConfigPage = () => {
+    const missing = desktopConfig?.status?.missing || [];
+    const config = desktopConfig || createEmptyDesktopConfig();
+    return (
+      <div className="app-config-page">
+        <div className="app-config-panel">
+          <div className="app-config-header">
+            <div>
+              <Typography.Title heading={3}>配置火山引擎账号</Typography.Title>
+              <Typography.Text type="secondary">
+                首次使用需要填写你自己的火山方舟模型、TOS 存储和可选配音配置。配置只保存在本机。
+              </Typography.Text>
+            </div>
+            {missing.length ? (
+              <div className="app-config-warning">
+                缺少：{missing.map(item => CONFIG_FIELD_LABELS[item] || item).join('、')}
+              </div>
+            ) : null}
+          </div>
+          <Form layout="vertical" className="app-config-form">
+            <div className="app-config-section">
+              <div className="app-config-section-title">火山方舟模型</div>
+              <Form.Item label="火山方舟 API Key" required>
+                <Input.Password
+                  value={config.volcengine.apiKey}
+                  onChange={value =>
+                    patchDesktopConfig({
+                      volcengine: { ...config.volcengine, apiKey: value },
+                    })
+                  }
+                />
+              </Form.Item>
+              <div className="app-config-grid">
+                <Form.Item label="文案/分镜模型 Endpoint ID" required>
+                  <Input
+                    value={config.volcengine.llmEndpointId}
+                    onChange={value =>
+                      patchDesktopConfig({
+                        volcengine: {
+                          ...config.volcengine,
+                          llmEndpointId: value,
+                        },
+                      })
+                    }
+                  />
+                </Form.Item>
+                <Form.Item label="图片生成模型 Endpoint ID" required>
+                  <Input
+                    value={config.volcengine.imageEndpointId}
+                    onChange={value =>
+                      patchDesktopConfig({
+                        volcengine: {
+                          ...config.volcengine,
+                          imageEndpointId: value,
+                        },
+                      })
+                    }
+                  />
+                </Form.Item>
+                <Form.Item label="视频生成模型 Endpoint ID" required>
+                  <Input
+                    value={config.volcengine.videoEndpointId}
+                    onChange={value =>
+                      patchDesktopConfig({
+                        volcengine: {
+                          ...config.volcengine,
+                          videoEndpointId: value,
+                        },
+                      })
+                    }
+                  />
+                </Form.Item>
+              </div>
+            </div>
+            <div className="app-config-section">
+              <div className="app-config-section-title">TOS 对象存储</div>
+              <div className="app-config-grid">
+                <Form.Item label="TOS Access Key" required>
+                  <Input.Password
+                    value={config.volcengine.tosAccessKey}
+                    onChange={value =>
+                      patchDesktopConfig({
+                        volcengine: {
+                          ...config.volcengine,
+                          tosAccessKey: value,
+                        },
+                      })
+                    }
+                  />
+                </Form.Item>
+                <Form.Item label="TOS Secret Key" required>
+                  <Input.Password
+                    value={config.volcengine.tosSecretKey}
+                    onChange={value =>
+                      patchDesktopConfig({
+                        volcengine: {
+                          ...config.volcengine,
+                          tosSecretKey: value,
+                        },
+                      })
+                    }
+                  />
+                </Form.Item>
+                <Form.Item label="TOS Bucket" required>
+                  <Input
+                    value={config.volcengine.tosBucket}
+                    onChange={value =>
+                      patchDesktopConfig({
+                        volcengine: {
+                          ...config.volcengine,
+                          tosBucket: value,
+                        },
+                      })
+                    }
+                  />
+                </Form.Item>
+              </div>
+            </div>
+            <div className="app-config-section">
+              <div className="app-config-section-title">配音，可稍后填写</div>
+              <div className="app-config-grid">
+                <Form.Item label="TTS Access Key">
+                  <Input.Password
+                    value={config.volcengine.ttsAccessKey}
+                    onChange={value =>
+                      patchDesktopConfig({
+                        volcengine: {
+                          ...config.volcengine,
+                          ttsAccessKey: value,
+                        },
+                      })
+                    }
+                  />
+                </Form.Item>
+                <Form.Item label="TTS App Key">
+                  <Input.Password
+                    value={config.volcengine.ttsAppKey}
+                    onChange={value =>
+                      patchDesktopConfig({
+                        volcengine: {
+                          ...config.volcengine,
+                          ttsAppKey: value,
+                        },
+                      })
+                    }
+                  />
+                </Form.Item>
+                <Form.Item label="默认音色">
+                  <Input
+                    value={config.volcengine.ttsSpeaker}
+                    onChange={value =>
+                      patchDesktopConfig({
+                        volcengine: {
+                          ...config.volcengine,
+                          ttsSpeaker: value,
+                        },
+                      })
+                    }
+                  />
+                </Form.Item>
+              </div>
+            </div>
+            <div className="app-config-section">
+              <div className="app-config-section-title">本地存储</div>
+              <Form.Item label="素材目录">
+                <Input
+                  value={config.runtime.assetRoot}
+                  addAfter={<Button onClick={handleSelectAssetRoot}>选择</Button>}
+                  onChange={value =>
+                    patchDesktopConfig({
+                      runtime: {
+                        ...config.runtime,
+                        assetRoot: value,
+                      },
+                    })
+                  }
+                />
+              </Form.Item>
+            </div>
+          </Form>
+          {configTestResult ? (
+            <div className="app-config-result">
+              {configTestResult.configured
+                ? '必填配置完整。保存后客户端会重启本地后端并注入这些配置。'
+                : `仍缺少：${configTestResult.missing
+                    .map(item => CONFIG_FIELD_LABELS[item] || item)
+                    .join('、')}`}
+            </div>
+          ) : null}
+          <div className="app-config-actions">
+            <Button loading={configSaving} onClick={handleTestConfig}>
+              检查必填项
+            </Button>
+            <Button
+              type="primary"
+              loading={configSaving}
+              disabled={!desktopConfig}
+              onClick={handleSaveConfig}
+            >
+              保存配置并重启后端
+            </Button>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  if (hasDesktopConfigAPI && !configLoading && configVisible) {
+    return renderDesktopConfigPage();
   }
 
   if (!currentUser) {
@@ -123,6 +490,11 @@ const Index = () => {
             <Button long type="primary" loading={loginLoading} onClick={handleLogin}>
               登录
             </Button>
+            {hasDesktopConfigAPI ? (
+              <Button long onClick={() => setConfigVisible(true)}>
+                编辑火山配置
+              </Button>
+            ) : null}
           </Form>
         </div>
       </div>

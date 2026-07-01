@@ -222,12 +222,79 @@ CHAT2CARTOON_ASSET_ROOT=/Users/me/Movies/chat2cartoon/generated pnpm dev
 打包命令：
 
 ```bash
+cd frontend
+pnpm build
+
+cd ..
+./scripts/build-backend-runtime-mac.sh
+
 cd desktop
-pnpm pack   # 生成未压缩应用目录，便于本机检查
-pnpm dist   # 使用 electron-builder 生成分发包
+pnpm run pack   # 生成未压缩应用目录，便于本机检查
+pnpm run dist   # 使用 electron-builder 生成分发包
 ```
 
-> 当前桌面壳会打包前端构建产物和后端源码，但 Python 运行时/模型依赖的完整内置分发仍需后续完善。面向没有 Python 环境的 macOS/Windows 用户分发前，需要补齐 Python runtime、后端依赖和平台签名/公证流程。
+`scripts/build-backend-runtime-mac.sh` 会使用 `CHAT2CARTOON_BACKEND_PYTHON` 指定的 Python；未指定时优先使用 `/opt/anaconda3/envs/video-gen1/bin/python`。脚本会检查并安装 PyInstaller，然后生成 macOS 后端 runtime。
+
+> 当前桌面壳会打包前端构建产物、后端源码，并预留 `backend-runtime/` 用于放置 PyInstaller 生成的后端可执行文件。Electron 在打包模式下会优先启动 `backend-runtime/chat2cartoon-backend(.exe)` 或 `backend-runtime/dist/chat2cartoon-backend/chat2cartoon-backend`；如果这些文件不存在，则回退到 Python 源码启动。面向没有 Python 环境的 macOS/Windows 用户分发前，需要先为对应平台生成后端 runtime，并补齐平台签名/公证流程。
+
+### 桌面客户端火山配置
+
+Electron 客户端支持把用户自己的火山引擎配置保存到本机用户目录。首次启动时，如果必填配置不完整，会先进入“配置火山引擎账号”页面；配置完整后，Electron 会在启动或重启后端时把这些配置注入为后端环境变量。
+
+必填配置：
+
+```text
+火山方舟 API Key
+文案/分镜模型 Endpoint ID
+图片生成模型 Endpoint ID
+视频生成模型 Endpoint ID
+TOS Access Key
+TOS Secret Key
+TOS Bucket
+```
+
+可选配音配置：
+
+```text
+TTS Access Key
+TTS App Key
+默认音色
+```
+
+配置保存位置：
+
+```text
+macOS:   ~/Library/Application Support/chat2cartoon-desktop/config.json
+Windows: %APPDATA%/chat2cartoon-desktop/config.json
+```
+
+素材目录默认值：
+
+```text
+开发模式: 仓库 assets/generated
+打包模式: Electron userData/assets/generated
+```
+
+注意：第一阶段的配置页只做必填项完整性检查和后端环境变量注入；真实连通性测试（例如 LLM 轻量调用、TOS 测试上传、TTS 试听）会在后续版本补充。
+
+后端 runtime 预期位置：
+
+```text
+backend-runtime/
+├── chat2cartoon-backend                         # macOS/Linux 单文件产物，可选
+├── chat2cartoon-backend.exe                     # Windows 单文件产物，可选
+└── dist/
+    └── chat2cartoon-backend/
+        └── chat2cartoon-backend                 # macOS PyInstaller onedir 产物
+```
+
+打包模式下，本地管理数据库会保存到 Electron 用户目录：
+
+```text
+macOS: ~/Library/Application Support/chat2cartoon-desktop/admin.db
+```
+
+这样升级或替换 `.app` 时不会覆盖用户账号、项目归属和管理后台数据。
 
 ## 目录结构
 

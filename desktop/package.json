@@ -13,6 +13,7 @@
   "build": {
     "appId": "com.local.chat2cartoon",
     "productName": "历史知识视频生成器",
+    "electronDist": "node_modules/electron/dist",
     "files": [
       "src/**/*",
       "package.json"
@@ -34,6 +35,13 @@
           "!**/*.pyc",
           "!logs/**",
           "!trace_*.log"
+        ]
+      },
+      {
+        "from": "../backend-runtime",
+        "to": "backend-runtime",
+        "filter": [
+          "**/*"
         ]
       }
     ],
