@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-from PyInstaller.utils.hooks import collect_all
+from PyInstaller.utils.hooks import collect_all, copy_metadata
 
 
 BACKEND_DIR = Path(SPECPATH).resolve().parent
@@ -10,6 +10,9 @@ BACKEND_DIR = Path(SPECPATH).resolve().parent
 datas = [
     (str(BACKEND_DIR / "media" / "DouyinSansBold.otf"), "media"),
 ]
+datas += copy_metadata("imageio")
+datas += copy_metadata("imageio_ffmpeg")
+datas += copy_metadata("moviepy")
 binaries = []
 hiddenimports = []
 

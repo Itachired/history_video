@@ -520,3 +520,46 @@ Windows Defender / SmartScreen 体验验证
 安装器品牌信息
 升级策略
 ```
+
+## 15. Windows 内测包下一步验证重点
+
+记录时间：2026-07-03。
+
+当前 Windows 内测构建已经生成：
+
+```text
+desktop/dist/历史知识视频生成器 Setup 0.1.0.exe
+desktop/dist/历史知识视频生成器 Setup 0.1.0.exe.blockmap
+desktop/dist/win-unpacked
+backend-runtime/dist/chat2cartoon-backend/chat2cartoon-backend.exe
+backend-runtime/chat2cartoon-backend.exe
+```
+
+其中 `desktop/dist/历史知识视频生成器 Setup 0.1.0.exe` 是下一台 Windows 机器优先下载和安装测试的产物。`desktop/dist/builder-debug.yml` 只用于本机构建排查，包含本机路径，不应作为分发文件。
+
+下一台机器的测试重点：
+
+```text
+1. 从 GitHub 下载 Windows 安装包 exe，确认文件能正常保存、双击启动安装。
+2. 使用普通用户权限安装，优先测试默认安装路径；再补测包含空格或中文的自定义安装路径。
+3. 首次启动客户端，确认能进入配置页或主流程，并能保存火山引擎配置。
+4. 在客户端内确认后端状态正常，/v1/desktop/status 返回 ok，且 backend.python 指向打包后的 exe。
+5. 退出客户端后检查 chat2cartoon-backend.exe 进程是否被正常关闭。
+6. 重新启动客户端，确认配置仍然存在，后端能再次随客户端启动。
+7. 跑一轮最小生成链路：脚本/参考图输入、分镜、角色、图片、视频、TTS、最终成片、下载导出。
+8. 覆盖安装同版本安装包，确认不会破坏已有配置和缓存。
+9. 卸载客户端，确认 %APPDATA%\chat2cartoon-desktop 是否按预期保留。
+10. 记录 Windows Defender、SmartScreen、杀毒软件拦截、安装耗时、首次启动耗时和失败日志。
+```
+
+当前已知缺口和风险：
+
+```text
+1. 安装包未签名，Get-AuthenticodeSignature 显示 NotSigned；内部测试可接受，正式分发需要代码签名。
+2. Windows 图标是临时生成的 desktop/build/icon.ico，不是正式品牌图标。
+3. Python 依赖存在临时兼容处理：volcengine 1.0.161 要求 pycryptodome==3.9.9，当前使用 pycryptodome 3.23.0 的 wheel 绕过本机编译失败；需要通过真实火山接口调用验证。
+4. wheel 0.47.0 与 packaging 23.2 存在 pip check 提示，暂未阻断后端启动。
+5. desktop/package.json 当前会把 backend 源码放入 resources/backend，便于 fallback，但正式发布前应评估是否移除源码 fallback。
+6. 当前 win-unpacked 未发现 .env、数据库、日志等敏感文件，但 extraResources 过滤规则仍建议继续加固，避免未来机器误打包本地数据。
+7. frontend/dist 当前包含 source map，内部测试可接受，正式发布前建议关闭或过滤。
+```

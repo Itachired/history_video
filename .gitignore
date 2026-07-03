@@ -12,6 +12,7 @@ logs/
 backend/logs/
 backend/trace_*.log
 backend/data/
+backend-runtime/chat2cartoon-backend.exe
 backend-runtime/dist/
 .pyinstaller-build/
 assets/generated/*
