@@ -37,6 +37,15 @@ const writeLogLine = (filePath, line) => {
   });
 };
 
+const writeAppLog = message => {
+  const line = `${new Date().toISOString()} ${message}${os.EOL}`;
+  if (!logsDir) {
+    console.warn(line.trim());
+    return;
+  }
+  writeLogLine(path.join(logsDir, 'app.log'), line);
+};
+
 const sanitizeProjectId = projectId => {
   const value = String(projectId || '').trim().replace(/[^a-zA-Z0-9_-]/g, '_');
   return value || 'default';
@@ -199,11 +208,21 @@ const getPackagedBackendExecutable = () => {
       ? 'chat2cartoon-backend.exe'
       : 'chat2cartoon-backend';
   const candidates = [
-    path.join(process.resourcesPath, 'backend-runtime', executableName),
     path.join(process.resourcesPath, 'backend-runtime', 'dist', 'chat2cartoon-backend', executableName),
+    path.join(process.resourcesPath, 'backend-runtime', executableName),
     path.join(process.resourcesPath, 'backend-runtime', 'dist', executableName),
   ];
-  return candidates.find(candidate => fs.existsSync(candidate)) || '';
+  return candidates.find(candidate => {
+    if (!fs.existsSync(candidate)) {
+      return false;
+    }
+    const sidecarDir = path.join(path.dirname(candidate), '_internal');
+    if (fs.existsSync(sidecarDir)) {
+      return true;
+    }
+    writeAppLog(`skipping packaged backend candidate without _internal sidecar: ${candidate}`);
+    return false;
+  }) || '';
 };
 
 const getBackendLaunchConfig = () => {
@@ -291,11 +310,42 @@ const waitForBackend = async origin => {
   return false;
 };
 
+const waitForBackendStart = async (origin, processToWatch) => {
+  const processFailure = new Promise((resolve, reject) => {
+    processToWatch.once('error', error => {
+      reject(error);
+    });
+    processToWatch.once('exit', (code, signal) => {
+      reject(new Error(`Backend exited before ready: code=${code ?? ''} signal=${signal ?? ''}`));
+    });
+  });
+  return Promise.race([waitForBackend(origin), processFailure]);
+};
+
 const notifyBackendStatus = status => {
   if (!mainWindow || mainWindow.isDestroyed()) {
     return;
   }
   mainWindow.webContents.send('backend:status-changed', status);
+};
+
+const stopBackend = async () => {
+  if (!backendProcess) {
+    return;
+  }
+  const processToStop = backendProcess;
+  backendProcess = null;
+  if (processToStop.exitCode !== null || processToStop.killed) {
+    return;
+  }
+  await new Promise(resolve => {
+    const timer = setTimeout(resolve, 3000);
+    processToStop.once('exit', () => {
+      clearTimeout(timer);
+      resolve();
+    });
+    processToStop.kill();
+  });
 };
 
 const startBackend = async ({ reuseExisting = true } = {}) => {
@@ -342,19 +392,31 @@ const startBackend = async ({ reuseExisting = true } = {}) => {
     `${new Date().toISOString()} starting backend mode=${launchConfig.mode} command=${launchConfig.command}${os.EOL}`,
   );
 
-  backendProcess = childProcess.spawn(launchConfig.command, launchConfig.args, {
+  const spawnedProcess = childProcess.spawn(launchConfig.command, launchConfig.args, {
     cwd: launchConfig.cwd,
     env,
     stdio: ['ignore', 'pipe', 'pipe'],
   });
+  backendProcess = spawnedProcess;
 
-  backendProcess.stdout.on('data', data => {
+  spawnedProcess.stdout.on('data', data => {
     writeLogLine(backendLog, data.toString());
   });
-  backendProcess.stderr.on('data', data => {
+  spawnedProcess.stderr.on('data', data => {
     writeLogLine(backendLog, data.toString());
   });
-  backendProcess.on('exit', (code, signal) => {
+  spawnedProcess.on('error', error => {
+    writeLogLine(
+      backendLog,
+      `${new Date().toISOString()} backend spawn error: ${String(error.stack || error)}${os.EOL}`,
+    );
+    notifyBackendStatus({
+      running: false,
+      backendOrigin,
+      message: `Backend spawn error: ${error.message}`,
+    });
+  });
+  spawnedProcess.on('exit', (code, signal) => {
     notifyBackendStatus({
       running: false,
       backendOrigin,
@@ -362,7 +424,7 @@ const startBackend = async ({ reuseExisting = true } = {}) => {
     });
   });
 
-  if (!(await waitForBackend(backendOrigin))) {
+  if (!(await waitForBackendStart(backendOrigin, spawnedProcess))) {
     throw new Error(`Backend did not become ready at ${backendOrigin}`);
   }
 
@@ -586,10 +648,7 @@ const registerIpcHandlers = () => {
   }));
 
   ipcMain.handle('backend:restart', async () => {
-    if (backendProcess) {
-      backendProcess.kill();
-      backendProcess = null;
-    }
+    await stopBackend();
     await startBackend({ reuseExisting: false });
     return {
       backendOrigin,
@@ -608,10 +667,7 @@ const registerIpcHandlers = () => {
 
   ipcMain.handle('config:save-and-restart', async (_event, config) => {
     const savedConfig = saveDesktopConfig(config);
-    if (backendProcess) {
-      backendProcess.kill();
-      backendProcess = null;
-    }
+    await stopBackend();
     await startBackend({ reuseExisting: false });
     return {
       config: sanitizeDesktopConfigForRenderer(savedConfig),

@@ -8,7 +8,7 @@ $RuntimeDir = Join-Path $ProjectRoot "backend-runtime"
 $BuildDir = Join-Path $ProjectRoot ".pyinstaller-build\win"
 $SpecFile = Join-Path $BackendDir "pyinstaller\chat2cartoon-backend.spec"
 $ExpectedExe = Join-Path $RuntimeDir "dist\chat2cartoon-backend\chat2cartoon-backend.exe"
-$RootExe = Join-Path $RuntimeDir "chat2cartoon-backend.exe"
+$LegacyRootExe = Join-Path $RuntimeDir "chat2cartoon-backend.exe"
 
 $IsWindowsPlatform = [System.Environment]::OSVersion.Platform -eq "Win32NT"
 if (-not $IsWindowsPlatform) {
@@ -72,7 +72,7 @@ if (-not $hasPyInstaller) {
 Write-Host "Cleaning previous backend runtime build..."
 Remove-Item -LiteralPath $BuildDir -Recurse -Force -ErrorAction SilentlyContinue
 Remove-Item -LiteralPath (Join-Path $RuntimeDir "dist") -Recurse -Force -ErrorAction SilentlyContinue
-Remove-Item -LiteralPath $RootExe -Force -ErrorAction SilentlyContinue
+Remove-Item -LiteralPath $LegacyRootExe -Force -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force -Path $BuildDir | Out-Null
 New-Item -ItemType Directory -Force -Path $RuntimeDir | Out-Null
 
@@ -88,11 +88,8 @@ if (-not (Test-Path -LiteralPath $ExpectedExe)) {
   throw "Expected backend executable was not created: $ExpectedExe"
 }
 
-Copy-Item -LiteralPath $ExpectedExe -Destination $RootExe -Force
-
 Write-Host "Backend runtime created:"
 Get-Item -LiteralPath $ExpectedExe | Format-List FullName,Length,LastWriteTime
 Write-Host ""
-Write-Host "Electron packaged mode can use:"
-Write-Host "  backend-runtime\chat2cartoon-backend.exe"
+Write-Host "Electron packaged mode will use:"
 Write-Host "  backend-runtime\dist\chat2cartoon-backend\chat2cartoon-backend.exe"

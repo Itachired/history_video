@@ -217,6 +217,11 @@ const Index = () => {
       }
       setConfigVisible(!isDesktopConfigReady(result.config));
       Message.success('配置已保存，后端已重启');
+    } catch (error) {
+      const message = error instanceof Error && error.message
+        ? error.message
+        : '请通过菜单打开日志目录查看 backend.log';
+      Message.error(`配置保存或后端重启失败：${message}`);
     } finally {
       setConfigSaving(false);
     }
