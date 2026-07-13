@@ -259,7 +259,7 @@ class VideoGenerator(Generator):
             index=index,
             video_gen_task_id=task_id,
             local_assets=[asset],
-            download_url=asset.get("download_url") or storage.local_download_url(asset.get("asset_id")),
+            download_url=asset.get("download_url") if asset.get("status") == "ready" else None,
             archive_url=archive_url,
         )
 

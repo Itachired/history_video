@@ -23,7 +23,7 @@ from volcenginesdkarkruntime.types.chat.chat_completion_chunk import Choice, Cho
     ChoiceDeltaToolCallFunction
 
 from app.clients.tos import TOSClient
-from app.clients.tts import tts
+from app.clients.tts import TTSServiceError, tts
 from app.constants import ARTIFACT_TOS_BUCKET, VALID_TONES, DEFAULT_AUDIO_TONE, MAX_STORY_BOARD_NUMBER
 from app.generators.base import Generator
 from app.generators.phase import PhaseFinder, Phase
@@ -118,22 +118,19 @@ class AudioGenerator(Generator):
             object="chat.completion.chunk"
         )
 
-        content = {"audios": [audio.model_dump() for audio in generated_audios]}
+        content = {"audios": [audio.model_dump(exclude_none=True) for audio in generated_audios]}
 
         generated_audios_indexes = set([a.index for a in generated_audios])
         for t in tones:
             if t.index in generated_audios_indexes:
                 continue
-            url = await self._generate_audio(t.line, t.tone, t.index)
-            content["audios"].append(Audio(
-                index=t.index,
-                url=url,
-            ).model_dump())
+            generated_audio = await self._generate_audio(t.line, t.tone, t.index)
+            content["audios"].append(generated_audio.model_dump(exclude_none=True))
 
         yield _get_tool_resp(0, json.dumps(content))
         yield _get_tool_resp(1)
 
-    async def _generate_audio(self, prompt: str, tone: str, index: int) -> str:
+    async def _generate_audio(self, prompt: str, tone: str, index: int) -> Audio:
         try:
             if tone not in VALID_TONES:
                 tone = DEFAULT_AUDIO_TONE
@@ -149,13 +146,41 @@ class AudioGenerator(Generator):
             self.tos_client.put_object(tos_bucket_name, tos_object_key, BytesIO(audio_bytes))
 
             output = self.tos_client.pre_signed_url(tos_bucket_name, tos_object_key)
-            return output.signed_url
+            return Audio(index=index, url=output.signed_url)
+        except TTSServiceError as e:
+            ERROR(
+                f"failed to generate audio, code: {e.code}, status_code: {e.status_code}, "
+                f"log_id: {e.log_id}, error: {e.message}"
+            )
+            return Audio(
+                index=index,
+                url=FAILED_AUDIO_URL,
+                error_code=e.code,
+                error_message=e.message,
+                log_id=e.log_id,
+            )
         except tos.exceptions.TosClientError as e:
             ERROR(f"fail with tos client error, message:{e.message}, cause: {e.cause}")
-            return FAILED_AUDIO_URL
+            return Audio(
+                index=index,
+                url=FAILED_AUDIO_URL,
+                error_code="TOS_CLIENT_ERROR",
+                error_message="音频上传失败，请检查对象存储配置和网络连接。",
+            )
         except tos.exceptions.TosServerError as e:
             ERROR(f"fail with tos server error, code:{e.code}, message: {e.message}, request_id: {e.request_id}")
-            return FAILED_AUDIO_URL
+            return Audio(
+                index=index,
+                url=FAILED_AUDIO_URL,
+                error_code="TOS_SERVER_ERROR",
+                error_message=f"对象存储服务返回错误：{e.code or e.message}",
+                log_id=e.request_id,
+            )
         except Exception as e:
             ERROR(f"failed to generate audio, error: {e}")
-            return FAILED_AUDIO_URL
+            return Audio(
+                index=index,
+                url=FAILED_AUDIO_URL,
+                error_code="AUDIO_GENERATION_FAILED",
+                error_message=f"音频生成失败：{e}",
+            )

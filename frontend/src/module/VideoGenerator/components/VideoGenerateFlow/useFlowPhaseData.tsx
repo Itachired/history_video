@@ -152,12 +152,18 @@ const useFlowPhaseData = (messages: ComplexMessage, parsedOriginData: ParsedData
       return [basicData];
     }
 
-    const result = audioTones.map((item, index) => ({
-      ...basicData,
-      description: item.versions[item.versions.length - 1].line,
-      tone: item.versions[item.versions.length - 1].tone,
-      mediaUrls: storyboardAudio[index]?.versions,
-    }));
+    const result = audioTones.map((item, index) => {
+      const audioError = storyboardAudio[index]?.extra;
+      return {
+        ...basicData,
+        description: item.versions[item.versions.length - 1].line,
+        tone: item.versions[item.versions.length - 1].tone,
+        mediaUrls: storyboardAudio[index]?.versions,
+        errorMessage: [audioError?.errorMessage, audioError?.logId ? `LogID: ${audioError.logId}` : '']
+          .filter(Boolean)
+          .join('\n'),
+      };
+    });
     return result;
   }, [audioTones, storyboardAudio]);
 

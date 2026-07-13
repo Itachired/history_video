@@ -184,7 +184,6 @@ class AssetStorageService:
             "index": index,
             "status": status,
             "video_gen_task_id": task_id,
-            "download_url": self._build_download_url(asset_id),
             "metadata": {
                 **(metadata or {}),
                 "video_gen_task_id": task_id,

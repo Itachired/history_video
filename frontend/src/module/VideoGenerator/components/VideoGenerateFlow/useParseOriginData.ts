@@ -189,7 +189,11 @@ export const useParseOriginData = (messages: ComplexMessage) => {
     }
   };
 
-  const parsePhaseAudio = (botMessage: BotMessage): { index: number; url: string }[] | undefined => {
+  const parsePhaseAudio = (
+    botMessage: BotMessage,
+  ):
+    | { index: number; url: string; error_code?: string; error_message?: string; log_id?: string }[]
+    | undefined => {
     const { versions, finish, currentVersion } = botMessage;
     if (!finish) {
       return undefined;
@@ -443,9 +447,19 @@ export const useParseOriginData = (messages: ComplexMessage) => {
                 assemblyData.push({
                   key: item.index,
                   versions: [item.url],
+                  extra: {
+                    errorCode: item.error_code,
+                    errorMessage: item.error_message,
+                    logId: item.log_id,
+                  },
                 });
               } else {
                 assemblyData[index].versions.push(item.url);
+                assemblyData[index].extra = {
+                  errorCode: item.error_code,
+                  errorMessage: item.error_message,
+                  logId: item.log_id,
+                };
               }
             });
           });

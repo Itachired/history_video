@@ -12,6 +12,7 @@
 import gzip
 import inspect
 import json
+import re
 import struct
 import uuid
 from typing import Optional
@@ -21,7 +22,7 @@ from pydantic import BaseModel
 
 from app.constants import TTS_NAMESPACE, TTS_INT_SIZE, TTS_DEFAULT_SPEAKER, TTS_BASE_URL, TTS_API_RESOURCE_ID, \
     TTS_ACCESS_KEY, TTS_APP_KEY
-from app.logger import INFO
+from app.logger import ERROR, INFO
 
 PROTOCOL_VERSION = 0b0001
 DEFAULT_HEADER_SIZE = 0b0001
@@ -100,6 +101,34 @@ class ResponseEvent(BaseModel):
 # Error messages as exceptions
 class ProtocolError(Exception):
     pass
+
+
+class TTSServiceError(RuntimeError):
+    def __init__(
+            self,
+            code: str,
+            message: str,
+            log_id: str = "",
+            status_code: Optional[int] = None,
+    ):
+        super().__init__(message)
+        self.code = code
+        self.message = message
+        self.log_id = log_id
+        self.status_code = status_code
+
+
+def _get_http_status_code(error: Exception) -> Optional[int]:
+    status_candidates = [
+        getattr(error, "status_code", None),
+        getattr(getattr(error, "response", None), "status_code", None),
+    ]
+    for status_code in status_candidates:
+        if isinstance(status_code, int):
+            return status_code
+
+    match = re.search(r"HTTP\s+(\d{3})", str(error), re.IGNORECASE)
+    return int(match.group(1)) if match else None
 
 
 # Message Types
@@ -254,11 +283,11 @@ class TTSClient:
     def __init__(
             self,
             speaker=TTS_DEFAULT_SPEAKER,
-            conn_id=str(uuid.uuid4()),
-            log_id=str(uuid.uuid4()),
+            conn_id: Optional[str] = None,
+            log_id: Optional[str] = None,
     ):
-        self.conn_id = conn_id
-        self.log_id = log_id
+        self.conn_id = conn_id or str(uuid.uuid4())
+        self.log_id = log_id or str(uuid.uuid4())
         self.conn = None
         self.sequence = 0
         self.conn = None
@@ -274,7 +303,32 @@ class TTSClient:
         self._validate_config()
         headers = self.build_http_header(self.conn_id, self.log_id)
         INFO("with logID: %s , header: %s", self.log_id, self._safe_headers_for_log(headers))
-        self.conn = await self._connect(headers)
+        try:
+            self.conn = await self._connect(headers)
+        except Exception as error:
+            status_code = _get_http_status_code(error)
+            ERROR(
+                "TTS connection failed, logID: %s, status_code: %s, error: %s",
+                self.log_id,
+                status_code,
+                error,
+            )
+            if status_code == 403:
+                raise TTSServiceError(
+                    code="TTS_AUTH_FORBIDDEN",
+                    message=(
+                        "TTS 鉴权失败（HTTP 403）。请检查 TTS App Key、Access Key、Resource ID "
+                        "以及双向流式 TTS 服务权限是否属于同一应用并已开通。"
+                    ),
+                    log_id=self.log_id,
+                    status_code=status_code,
+                ) from error
+            raise TTSServiceError(
+                code="TTS_CONNECTION_FAILED",
+                message="无法连接 TTS 服务，请检查网络、服务地址和代理设置。",
+                log_id=self.log_id,
+                status_code=status_code,
+            ) from error
         self.params = params
         INFO("Dial server with LogID: %s", self.log_id)
         # Create a new message with type MsgTypeFullClient and flag MsgTypeFlagWithEvent
@@ -286,6 +340,7 @@ class TTSClient:
         # Read ConnectionStarted message
         response = await self.conn.recv()
         result = parse_response(response)
+        self._raise_for_service_error(result)
         INFO("received %s", result)
         await self._start_tts_session(namespace=namespace, params=params)
 
@@ -308,6 +363,7 @@ class TTSClient:
         # Implement the start TTS session logic here
         response = await self.conn.recv()
         result = parse_response(response)
+        self._raise_for_service_error(result)
         self.session_id = result.session_id
         return result
 
@@ -390,6 +446,15 @@ class TTSClient:
                 safe_headers[key] = "***"
         return safe_headers
 
+    def _raise_for_service_error(self, result: ResponseEvent):
+        if result.error_code is None:
+            return
+        raise TTSServiceError(
+            code="TTS_SERVICE_REJECTED",
+            message=f"TTS 服务拒绝了合成请求（错误码 {result.error_code}）：{result.payload_msg}",
+            log_id=self.log_id,
+        )
+
     def _validate_config(self):
         missing = []
         if not TTS_ACCESS_KEY:
@@ -401,7 +466,11 @@ class TTSClient:
         if not TTS_API_RESOURCE_ID:
             missing.append("TTS_API_RESOURCE_ID")
         if missing:
-            raise ValueError("missing TTS config: " + ", ".join(missing))
+            raise TTSServiceError(
+                code="TTS_CONFIG_MISSING",
+                message="TTS 配置不完整：" + ", ".join(missing),
+                log_id=self.log_id,
+            )
 
 
 def parse_response(res) -> ResponseEvent:
@@ -479,12 +548,21 @@ async def tts(text: str, params: dict, speaker: str = TTS_DEFAULT_SPEAKER):
                 finished=True,
             )
         )
-    except Exception as e:
-        raise e
-
-    await tts_client.close(code=1000, reason="Normal closure")
-
-    return audio
+        return audio
+    except TTSServiceError:
+        raise
+    except ProtocolError as error:
+        raise TTSServiceError(
+            code="TTS_SERVICE_REJECTED",
+            message=f"TTS 服务拒绝了合成请求：{error}",
+            log_id=tts_client.log_id,
+        ) from error
+    finally:
+        if tts_client.conn is not None:
+            try:
+                await tts_client.close(code=1000, reason="Normal closure")
+            except Exception:
+                pass
 
 
 def contain_event(flags):

@@ -55,6 +55,7 @@ export const PHASE_MAP: Record<VideoGeneratorTaskPhase, PhaseMapType> = {
   },
   [VideoGeneratorTaskPhase.PhaseTone]: {
     userConfirmationDataKey: UserConfirmationDataKey.Tones,
+    containsErrorMessage: ErrorString.ToneError,
   },
   [VideoGeneratorTaskPhase.PhaseAudio]: {
     userConfirmationDataKey: UserConfirmationDataKey.Audios,

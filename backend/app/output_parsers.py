@@ -65,18 +65,18 @@ def parse_video_description(completions: str) -> List[VideoDescription]:
 
 
 def parse_tone(completions: str) -> List[Tone]:
-    lines = re.findall(r"中文台词[：:](.*)", completions)
-    lines_en = re.findall(r"英文台词[：:](.*)", completions)
-    tones_text = re.findall(r"音色[：:](.*)", completions)
+    lines = re.findall(r"中文台词\s*[：:]\s*(.*)", completions)
+    lines_en = re.findall(r"英文台词\s*[：:]\s*(.*)", completions)
+    tones_text = re.findall(r"音色\s*[：:]\s*(.*)", completions)
 
     tones = []
     for i, (l, le, t) in enumerate(zip(lines, lines_en, tones_text)):
         tones.append(
             Tone(
                 index=i,
-                line=l,
-                line_en=le,
-                tone=t,
+                line=l.strip(),
+                line_en=le.strip(),
+                tone=t.strip(),
             )
         )
     return tones

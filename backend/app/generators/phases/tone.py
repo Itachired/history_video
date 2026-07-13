@@ -148,7 +148,7 @@ class ToneGenerator(Generator):
         if self.mode == Mode.CORRECTION:
             yield get_correction_completion_chunk(self.request.messages[-1], Phase.TONE)
         else:
-            storyboard, _ = self.phase_finder.get_storyboards()
+            storyboard, storyboards = self.phase_finder.get_storyboards()
             messages = [
                 _select_tone_prompt(self.phase_finder.get_content_mode()),
                 ArkMessage(role="user", content=storyboard),
@@ -162,6 +162,15 @@ class ToneGenerator(Generator):
                 completion += chunk.choices[0].delta.content
 
             tones = parse_tone(completion)
+            if not tones:
+                ERROR("failed to generate tones: model output could not be parsed")
+                raise InvalidParameter("messages", "failed to generate tones: empty parsed result")
+            if len(tones) != len(storyboards):
+                ERROR(
+                    f"failed to generate tones: count mismatch, tones={len(tones)}, "
+                    f"storyboards={len(storyboards)}"
+                )
+                raise InvalidParameter("messages", "failed to generate tones: count mismatch")
             tones_json = {
                 "tones": [t.model_dump() for t in tones]
             }

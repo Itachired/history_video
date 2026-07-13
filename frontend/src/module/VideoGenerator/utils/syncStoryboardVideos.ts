@@ -10,6 +10,8 @@ export interface StoryboardVideoAsset {
   download_url?: string;
   relative_path?: string;
   filename?: string;
+  size?: number;
+  updated_at?: string;
   message?: string;
   metadata?: Record<string, unknown>;
 }

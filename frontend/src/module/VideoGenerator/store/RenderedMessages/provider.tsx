@@ -559,7 +559,7 @@ const RenderedMessagesProvider = (props: PropsWithChildren<Props>) => {
     // 清空
     regenerationDescriptionRef.current = undefined;
 
-    const checkStatus = checkFinishMessage(newMessage, phase);
+    let checkStatus = checkFinishMessage(newMessage, phase);
 
     // 更新用户所选的信息
     if (
@@ -581,8 +581,16 @@ const RenderedMessagesProvider = (props: PropsWithChildren<Props>) => {
           return;
         }
         const parsedData = JSON.parse(messageItem.content);
-        // 更新 ref
-        updateConfirmationMessage(parsedData);
+        const invalidToneData =
+          phase === VideoGeneratorTaskPhase.PhaseTone &&
+          (!Array.isArray(parsedData?.[UserConfirmationDataKey.Tones]) ||
+            parsedData[UserConfirmationDataKey.Tones].length === 0);
+        if (invalidToneData) {
+          checkStatus = RunningPhaseStatus.ContentError;
+        } else {
+          // 更新 ref
+          updateConfirmationMessage(parsedData);
+        }
       } catch {}
     } else if (
       [

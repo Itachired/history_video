@@ -29,6 +29,7 @@ export const format = (s: number) => dayjs.duration(s, 'seconds').format('mm:ss'
 
 interface TProps {
   audioLink?: string;
+  errorMessage?: string;
   seconds?: number;
   audioImg?: string;
   hasRadius?: boolean;
@@ -42,7 +43,7 @@ const showTime = (time: number) =>
     .padStart(2, '0')}`;
 
 const AudioBlock = (props: TProps) => {
-  const { audioLink, audioImg, seconds = 5, hasRadius = false } = props;
+  const { audioLink, errorMessage, audioImg, seconds = 5, hasRadius = false } = props;
   const audioRef = useRef<HTMLAudioElement>(null);
   const [playTime, setPlayTime] = useState({ currentTime: 0, duration: 0 });
   const [isPlaying, setIsPlaying] = useState(false);
@@ -79,6 +80,7 @@ const AudioBlock = (props: TProps) => {
         <div className={styles.failed}>
           <img src={iconAudioFailed} style={{ width: 76, height: 76 }} />
           <div className={styles.failedText}>{'音频生成失败'}</div>
+          {errorMessage ? <div className={styles.failedDetail}>{errorMessage}</div> : null}
         </div>
       );
     }

@@ -131,12 +131,22 @@ const VideoGenerateFlow = (props: Props) => {
   const hasReadyLocalAsset = (item?: Record<string, any>) =>
     Boolean(item?.local_assets?.some((asset: Record<string, any>) => asset.status === 'ready'));
 
-  const getAssetDownloadUrl = (item?: Record<string, any>, fallbackUrl = '') =>
-    item?.local_assets?.find((asset: Record<string, any>) => asset.status === 'ready')?.download_url ||
-    item?.download_url ||
-    fallbackUrl ||
-    item?.images?.[0] ||
-    item?.url;
+  const getAssetDownloadUrl = (item?: Record<string, any>, fallbackUrl = '') => {
+    const localAssets = item?.local_assets;
+    const readyAsset = localAssets?.find((asset: Record<string, any>) => asset.status === 'ready');
+    if (Array.isArray(localAssets)) {
+      const readyUrl = readyAsset?.download_url || item?.download_url || '';
+      if (!readyAsset || !readyUrl) {
+        return '';
+      }
+      if (readyAsset.updated_at && readyUrl.startsWith('/')) {
+        const separator = readyUrl.includes('?') ? '&' : '?';
+        return `${readyUrl}${separator}v=${encodeURIComponent(readyAsset.updated_at)}`;
+      }
+      return readyUrl;
+    }
+    return item?.download_url || fallbackUrl || item?.images?.[0] || item?.url;
+  };
 
   const getProjectAssetUrl = (phase: 'role_images' | 'storyboard_images' | 'storyboard_videos', index: number) => {
     const projectId = userConfirmData?.[UserConfirmationDataKey.ContentOptions]?.project_id;
@@ -237,6 +247,9 @@ const VideoGenerateFlow = (props: Props) => {
         prevAsset?.status !== asset.status ||
         prevAsset?.filename !== asset.filename ||
         prevAsset?.message !== asset.message ||
+        prevAsset?.updated_at !== asset.updated_at ||
+        prevAsset?.size !== asset.size ||
+        prevAsset?.download_url !== asset.download_url ||
         prevVideo.download_url !== nextVideo.download_url
       ) {
         nextVideos[videoIndex] = nextVideo;
@@ -897,7 +910,10 @@ const VideoGenerateFlow = (props: Props) => {
                           if (
                             currentAsset?.status === nextAsset.status &&
                             currentAsset?.filename === nextAsset.filename &&
-                            currentAsset?.message === nextAsset.message
+                            currentAsset?.message === nextAsset.message &&
+                            currentAsset?.updated_at === nextAsset.updated_at &&
+                            currentAsset?.size === nextAsset.size &&
+                            currentAsset?.download_url === nextAsset.download_url
                           ) {
                             return;
                           }
@@ -1065,6 +1081,7 @@ const VideoGenerateFlow = (props: Props) => {
                           <MediaCard
                             key={`${FlowPhase.GenerateStoryBoardAudio}${index}`}
                             src={(!isUndefined(audioIndex) && audios?.[audioIndex]?.url) || ''}
+                            errorMessage={item.errorMessage}
                             prompt={item.description}
                             disabled={modelOperateDisabled}
                             tone={item.tone}
@@ -1272,23 +1289,37 @@ const VideoGenerateFlow = (props: Props) => {
     }
 
     let stopped = false;
+    let timer: number | undefined;
+    const stopSync = () => {
+      if (timer !== undefined) {
+        window.clearInterval(timer);
+        timer = undefined;
+      }
+    };
     const syncOnce = async () => {
       try {
         const result = await syncStoryboardVideos(projectId);
         if (stopped) {
           return;
         }
-        mergeStoryboardVideoAssets(result.assets || []);
+        const assets = result.assets || [];
+        mergeStoryboardVideoAssets(assets);
+        if (
+          assets.length > 0 &&
+          assets.every(asset => ['ready', 'failed', 'cancelled', 'canceled'].includes(asset.status))
+        ) {
+          stopSync();
+        }
       } catch {
         // Keep the card-level polling and the next project-level tick alive.
       }
     };
 
     syncOnce();
-    const timer = window.setInterval(syncOnce, 3000);
+    timer = window.setInterval(syncOnce, 3000);
     return () => {
       stopped = true;
-      window.clearInterval(timer);
+      stopSync();
     };
   }, [
     projectId,
@@ -1300,11 +1331,22 @@ const VideoGenerateFlow = (props: Props) => {
   ]);
 
   useEffect(() => {
-    if (!projectId) {
+    const currentFilmAsset = userConfirmData?.[UserConfirmationDataKey.Film]?.local_assets?.[0];
+    const shouldPollFilm =
+      runningPhase === VideoGeneratorTaskPhase.PhaseFilm ||
+      Boolean(userConfirmData?.[UserConfirmationDataKey.Film]);
+    if (!projectId || !shouldPollFilm || currentFilmAsset?.status === 'ready') {
       return undefined;
     }
 
     let stopped = false;
+    let timer: number | undefined;
+    const stopSync = () => {
+      if (timer !== undefined) {
+        window.clearInterval(timer);
+        timer = undefined;
+      }
+    };
     const syncFilmOnce = async () => {
       try {
         const manifest = await getProjectManifest(projectId);
@@ -1315,16 +1357,19 @@ const VideoGenerateFlow = (props: Props) => {
           ?.filter(asset => asset.phase === 'film' && asset.status === 'ready')
           .sort((a, b) => (b.updated_at || '').localeCompare(a.updated_at || ''))[0];
         mergeFilmAsset(filmAsset);
+        if (filmAsset) {
+          stopSync();
+        }
       } catch {
         // Manifest sync is a fallback; streamed film results remain the primary path.
       }
     };
 
     syncFilmOnce();
-    const timer = window.setInterval(syncFilmOnce, 3000);
+    timer = window.setInterval(syncFilmOnce, 3000);
     return () => {
       stopped = true;
-      window.clearInterval(timer);
+      stopSync();
     };
   }, [
     projectId,

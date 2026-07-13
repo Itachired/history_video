@@ -18,3 +18,6 @@ class Audio(BaseModel):
     index: int
     url: str
     audio_data: Optional[bytes] = None
+    error_code: Optional[str] = None
+    error_message: Optional[str] = None
+    log_id: Optional[str] = None

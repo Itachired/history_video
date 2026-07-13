@@ -199,6 +199,7 @@ export interface DescriptionType {
 export enum ErrorString {
   ImageError = 'Post Img Risk Not Pass',
   VideoError = 'failed to generate video',
+  ToneError = 'failed to generate tones',
   AudioError = 'failed to generate audio',
 }
 

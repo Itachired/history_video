@@ -33,6 +33,7 @@ interface Props {
   src: string;
   type?: 'video' | 'audio' | 'image';
   videoUrl?: string;
+  errorMessage?: string;
   tone?: string;
   audioImg?: string;
   title?: ReactNode;
@@ -67,6 +68,7 @@ const MediaCard = (props: Props) => {
   const {
     src,
     videoUrl,
+    errorMessage,
     audioImg,
     type,
     tone,
@@ -164,7 +166,7 @@ const MediaCard = (props: Props) => {
         );
       case 'audio':
         return (
-          <AudioBlock audioLink={src} hasRadius={view} audioImg={audioImg} />
+          <AudioBlock audioLink={src} errorMessage={errorMessage} hasRadius={view} audioImg={audioImg} />
         );
       case 'image':
         return view ? (
